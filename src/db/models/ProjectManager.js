@@ -46,6 +46,12 @@ class ProjectManager {
         const result = await pool.query(query, [project_id, user_id]);
         return result.rows[0];
     }
+
+    static async deleteByProjectAndManager(project_id, manager_id) {
+        const query = `DELETE FROM project_managers WHERE project_id = $1 AND manager_id = $2`;
+        const result = await pool.query(query, [project_id, manager_id]);
+        return result.rowCount > 0;
+    }
 }
 
 module.exports = ProjectManager; 

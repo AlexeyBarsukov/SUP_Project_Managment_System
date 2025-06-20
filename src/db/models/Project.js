@@ -212,6 +212,19 @@ class Project {
         }
     }
 
+    // Удалить пользователя из ролей проекта
+    static async removeUserFromProjectRoles(userId, projectId, role) {
+        const query = `
+            DELETE FROM project_members 
+            WHERE user_id = $1 AND project_id = $2 AND role = $3
+        `;
+        try {
+            await pool.query(query, [userId, projectId, role]);
+        } catch (error) {
+            throw new Error(`Error removing user from project roles: ${error.message}`);
+        }
+    }
+
     // Удаление проекта (только для заказчика)
     static async delete(projectId, customerId) {
         const client = await pool.connect();

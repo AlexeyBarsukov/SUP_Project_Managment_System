@@ -103,6 +103,40 @@ const myProjects = async (ctx) => {
             message += `🆔 ID: ${project.id}\n`;
             if (ctx.user.main_role === 'customer') {
                 message += `👤 Роль: Заказчик\n`;
+                // Показываем менеджера для заказчика
+                const managers = await ProjectManager.findByProject(project.id);
+                let acceptedManagers = [];
+                let pendingManagers = [];
+                
+                for (const m of managers) {
+                    if (m.status === 'accepted') acceptedManagers.push(m);
+                    if (m.status === 'pending') pendingManagers.push(m);
+                }
+                
+                if (acceptedManagers.length > 0) {
+                    // Есть принятые менеджеры
+                    for (const m of acceptedManagers) {
+                        const user = await User.findById(m.manager_id);
+                        if (user && user.username) {
+                            message += `👨‍💼 <b>Менеджер:</b> @${user.username}\n`;
+                        } else if (user) {
+                            message += `👨‍💼 <b>Менеджер:</b> ${user.first_name || 'Неизвестно'}\n`;
+                        }
+                    }
+                } else if (pendingManagers.length > 0) {
+                    // Есть менеджеры на рассмотрении
+                    for (const m of pendingManagers) {
+                        const user = await User.findById(m.manager_id);
+                        if (user && user.username) {
+                            message += `👨‍💼 <b>Менеджер:</b> @${user.username} (на рассмотрении)\n`;
+                        } else if (user) {
+                            message += `👨‍💼 <b>Менеджер:</b> ${user.first_name || 'Неизвестно'} (на рассмотрении)\n`;
+                        }
+                    }
+                } else {
+                    // Нет менеджеров - заказчик сам менеджер
+                    message += `👨‍💼 <b>Менеджер:</b> Вы сами менеджер на своем проекте\n`;
+                }
             } else if (ctx.user.main_role === 'manager') {
                 message += `👤 Ваша роль: Менеджер\n`;
                 // Получаем всех менеджеров проекта
@@ -132,6 +166,45 @@ const myProjects = async (ctx) => {
                 }
             } else if (project.member_role) {
                 message += `👤 Роль: ${project.member_role === 'manager' ? 'Менеджер' : 'Исполнитель'}\n`;
+                // Показываем менеджера для исполнителей
+                const managers = await ProjectManager.findByProject(project.id);
+                let acceptedManagers = [];
+                let pendingManagers = [];
+                
+                for (const m of managers) {
+                    if (m.status === 'accepted') acceptedManagers.push(m);
+                    if (m.status === 'pending') pendingManagers.push(m);
+                }
+                
+                if (acceptedManagers.length > 0) {
+                    // Есть принятые менеджеры
+                    for (const m of acceptedManagers) {
+                        const user = await User.findById(m.manager_id);
+                        if (user && user.username) {
+                            message += `👨‍💼 <b>Менеджер:</b> @${user.username}\n`;
+                        } else if (user) {
+                            message += `👨‍💼 <b>Менеджер:</b> ${user.first_name || 'Неизвестно'}\n`;
+                        }
+                    }
+                } else if (pendingManagers.length > 0) {
+                    // Есть менеджеры на рассмотрении
+                    for (const m of pendingManagers) {
+                        const user = await User.findById(m.manager_id);
+                        if (user && user.username) {
+                            message += `👨‍💼 <b>Менеджер:</b> @${user.username} (на рассмотрении)\n`;
+                        } else if (user) {
+                            message += `👨‍💼 <b>Менеджер:</b> ${user.first_name || 'Неизвестно'} (на рассмотрении)\n`;
+                        }
+                    }
+                } else {
+                    // Нет менеджеров - заказчик сам менеджер
+                    const customer = await User.findById(project.customer_id);
+                    if (customer && customer.username) {
+                        message += `👨‍💼 <b>Менеджер:</b> @${customer.username} (заказчик)\n`;
+                    } else if (customer) {
+                        message += `👨‍💼 <b>Менеджер:</b> ${customer.first_name || 'Неизвестно'} (заказчик)\n`;
+                    }
+                }
             }
             message += `📅 Создан: ${new Date(project.created_at).toLocaleDateString('ru-RU')}\n\n`;
             // Подсказка об удалении только для заказчика
@@ -158,19 +231,33 @@ const myProjects = async (ctx) => {
 // Просмотр деталей проекта
 const projectDetails = async (ctx) => {
     try {
+        console.log('=== PROJECT DETAILS START ===');
+        console.log('Params:', ctx.params);
+        
         const projectId = parseInt(ctx.params[0]);
+        console.log('Project ID from params:', projectId);
         
         // Валидируем ID проекта
         const validation = validateProjectId(projectId);
         if (!validation.isValid) {
+            console.log('Validation failed:', validation.error);
             return ctx.reply(`❌ ${validation.error}`);
         }
 
         const project = await Project.findById(validation.id);
+        console.log('Project found:', project ? 'YES' : 'NO');
         
         if (!project) {
+            console.log('Project not found');
             return ctx.reply('❌ Проект не найден.');
         }
+
+        console.log('Project data:', {
+            id: project.id,
+            name: project.name,
+            status: project.status,
+            customer_id: project.customer_id
+        });
 
         // Проверяем права доступа
         const hasAccess = project.customer_id === ctx.user.id || 
@@ -178,7 +265,12 @@ const projectDetails = async (ctx) => {
                              members.some(m => m.id === ctx.user.id)
                          );
 
+        console.log('Has access:', hasAccess);
+        console.log('User ID:', ctx.user.id);
+        console.log('Customer ID:', project.customer_id);
+
         if (!hasAccess) {
+            console.log('Access denied');
             return ctx.reply('❌ У вас нет доступа к этому проекту.');
         }
 
@@ -199,42 +291,51 @@ const projectDetails = async (ctx) => {
 
         let message = `📋 <b>Проект: ${project.name}</b>\n\n`;
         message += `📝 <b>Описание:</b> ${project.description}\n`;
-        // --- Новый блок: статус менеджера и статус проекта ---
+        
+        // --- Блок отображения менеджера ---
         const managers = await ProjectManager.findByProject(project.id);
         let acceptedManagers = [];
         let pendingManagers = [];
+        
         for (const m of managers) {
             if (m.status === 'accepted') acceptedManagers.push(m);
             if (m.status === 'pending') pendingManagers.push(m);
         }
-        // Сначала pending (на рассмотрении)
-        if (pendingManagers.length > 0) {
-            for (const m of pendingManagers) {
-                const user = await User.findById(m.manager_id);
-                message += `👨‍💼 <b>Менеджер:</b> @${user?.username || user?.first_name || 'Неизвестно'} (на рассмотрении)\n`;
-            }
-        }
-        // Затем accepted (принял)
+        
+        // Определяем, есть ли менеджер у проекта
         if (acceptedManagers.length > 0) {
+            // Есть принятые менеджеры
             for (const m of acceptedManagers) {
                 const user = await User.findById(m.manager_id);
-                message += `👨‍💼 <b>Менеджер:</b> @${user?.username || user?.first_name || 'Неизвестно'} (принял)\n`;
+                if (user && user.username) {
+                    message += `👨‍💼 <b>Менеджер:</b> @${user.username}\n`;
+                } else if (user) {
+                    message += `👨‍💼 <b>Менеджер:</b> ${user.first_name || 'Неизвестно'}\n`;
+                }
             }
+        } else if (pendingManagers.length > 0) {
+            // Есть менеджеры на рассмотрении
+            for (const m of pendingManagers) {
+                const user = await User.findById(m.manager_id);
+                if (user && user.username) {
+                    message += `👨‍💼 <b>Менеджер:</b> @${user.username} (на рассмотрении)\n`;
+                } else if (user) {
+                    message += `👨‍💼 <b>Менеджер:</b> ${user.first_name || 'Неизвестно'} (на рассмотрении)\n`;
+                }
+            }
+        } else {
+            // Нет менеджеров - заказчик сам менеджер
+            message += `👨‍💼 <b>Менеджер:</b> Вы сами менеджер на своем проекте\n`;
         }
-        // Если нет ни pending, ни accepted
-        if (acceptedManagers.length === 0 && pendingManagers.length === 0) {
-            message += `👨‍💼 <b>Менеджер:</b> Вы заказчик-менеджер\n`;
-        }
-        // --- статус проекта ---
+        
+        // --- Статус проекта ---
         let statusText = '';
         if (project.status === 'searching_manager') statusText = 'В поисках менеджера';
         else if (project.status === 'searching_executors') statusText = 'В поисках исполнителей';
         else if (project.status === 'active' || project.status === 'in_progress') statusText = 'В работе';
         else if (project.status === 'draft') statusText = 'Черновик';
         else statusText = project.status;
-        message += `📊 <b>Статус:</b> ${statusText}\n`;
-        message += managerBlock + '\n\n';
-        // --- конец блока ---
+        message += `📊 <b>Статус:</b> ${statusText}\n\n`;
 
         // --- Показываем только заполненные поля проекта ---
         function isFilled(val) {
@@ -261,24 +362,99 @@ const projectDetails = async (ctx) => {
             message += '👥 <b>Исполнители:</b> Пока нет исполнителей\n';
         }
 
-        // --- Действия для заказчика при статусе searching_manager и pending-менеджере ---
-        if (project.customer_id === ctx.user.id && project.status === 'searching_manager' && pendingManagers.length > 0) {
+        // --- Действия для заказчика (управление менеджерами) ---
+        if (project.customer_id === ctx.user.id) {
+            let managerButtons = [];
+            
+            // Получаем всех менеджеров проекта
+            const allManagers = await ProjectManager.findByProject(project.id);
+            const acceptedManagers = allManagers.filter(m => m.status === 'accepted');
+            const pendingManagers = allManagers.filter(m => m.status === 'pending');
+            const totalManagers = acceptedManagers.length + pendingManagers.length;
+            
+            // Проверяем, является ли заказчик менеджером
+            const isCustomerManager = acceptedManagers.some(m => m.manager_id === ctx.user.id);
+            
+            // ОТЛАДОЧНАЯ ИНФОРМАЦИЯ
+            console.log('=== DEBUG PROJECT DETAILS ===');
+            console.log('Project ID:', project.id);
+            console.log('Project status:', project.status);
+            console.log('Customer ID:', project.customer_id);
+            console.log('Current user ID:', ctx.user.id);
+            console.log('Is customer?', project.customer_id === ctx.user.id);
+            console.log('All managers:', allManagers);
+            console.log('Accepted managers:', acceptedManagers);
+            console.log('Pending managers:', pendingManagers);
+            console.log('Total managers:', totalManagers);
+            console.log('Is customer manager?', isCustomerManager);
+            
+            // Кнопки управления менеджерами показываем только при определенных статусах
+            const allowedStatuses = ['active', 'searching_executors'];
+            if (allowedStatuses.includes(project.status)) {
+                
+                // Кнопка "Убрать менеджера" - показываем только если есть принятые менеджеры, кроме заказчика
+                const otherManagers = acceptedManagers.filter(m => m.manager_id !== ctx.user.id);
+                if (otherManagers.length > 0) {
+                    managerButtons.push([
+                        { text: '❌ Убрать менеджера', callback_data: `remove_manager_${project.id}` }
+                    ]);
+                }
+                
+                // Кнопка "Сменить менеджера" - показываем только если есть принятые менеджеры
+                if (acceptedManagers.length > 0) {
+                    managerButtons.push([
+                        { text: '🔄 Сменить менеджера', callback_data: `change_manager_${project.id}` }
+                    ]);
+                }
+                
+                // Кнопка "Добавить менеджера" - показываем только если меньше 3 менеджеров
+                if (totalManagers < 3) {
+                    managerButtons.push([
+                        { text: '➕ Добавить менеджера', callback_data: `add_manager_${project.id}` }
+                    ]);
+                    // Добавляем кнопку поиска по никнейму
+                    managerButtons.push([
+                        { text: '🔍 Найти по никнейму', callback_data: `search_manager_${project.id}` }
+                    ]);
+                }
+                
+                // Кнопка "Назначить менеджера" - показываем если нет других менеджеров (кроме заказчика)
+                if (otherManagers.length === 0 && totalManagers < 3) {
+                    managerButtons.push([
+                        { text: '👨‍💼 Назначить менеджера', callback_data: `assign_manager_${project.id}` }
+                    ]);
+                }
+                
+                // ОТЛАДОЧНАЯ ИНФОРМАЦИЯ ДЛЯ КНОПОК
+                console.log('Other managers:', otherManagers);
+                console.log('Other managers length:', otherManagers.length);
+                console.log('Total managers < 3?', totalManagers < 3);
+                console.log('Should show assign button?', otherManagers.length === 0 && totalManagers < 3);
+                console.log('Manager buttons:', managerButtons);
+                console.log('=== END DEBUG ===');
+            } else {
+                // Добавляем информационное сообщение о недоступности управления менеджерами
+                const statusName = statusNames[project.status] || project.status;
+                message += `\n\nℹ️ <b>Управление менеджерами недоступно</b>\n` +
+                          `Кнопки управления менеджерами отображаются только для проектов в статусе "Активный" или "Поиск исполнителей".\n` +
+                          `Текущий статус: <b>${statusName}</b>`;
+            }
+            
+            // Добавляем кнопки управления проектом (всегда доступны заказчику)
+            managerButtons.push([
+                { text: '📊 Изменить статус', callback_data: `change_status_${project.id}` },
+                { text: '🗑️ Удалить проект', callback_data: `delete_project_${project.id}` }
+            ]);
+            
             await ctx.reply(message, {
                 parse_mode: 'HTML',
                 reply_markup: {
-                    inline_keyboard: [
-                        [
-                            { text: 'Назначить другого менеджера', callback_data: `reassign_manager_${project.id}_${pendingManagers[0].manager_id}` }
-                        ],
-                        [
-                            { text: 'Отклонить приглашение', callback_data: `cancel_manager_invite_${project.id}` },
-                            { text: 'Обсудить', callback_data: `change_manager_offer_${project.id}` }
-                        ]
-                    ]
+                    inline_keyboard: managerButtons
                 }
             });
             return;
         }
+        
         // --- Действия для менеджера ---
         if (
             pendingManagers.length > 0 &&
@@ -290,11 +466,11 @@ const projectDetails = async (ctx) => {
                 reply_markup: {
                     inline_keyboard: [
                         [
-                            { text: '✅ Принять', callback_data: `accept_invite_${project.id}` },
-                            { text: '❌ Отклонить', callback_data: `decline_invite_${project.id}` }
+                            { text: '📋 Подробнее о проекте и условиях', callback_data: `project_preview_${project.id}` }
                         ],
                         [
-                            { text: '💬 Обсудить', callback_data: `project_offer_${project.id}` }
+                            { text: '✅ Согласиться', callback_data: `accept_invite_${project.id}` },
+                            { text: '❌ Отказаться', callback_data: `decline_invite_${project.id}` }
                         ]
                     ]
                 }
@@ -497,7 +673,7 @@ const handleCreateProjectStep = async (ctx) => {
         case 'deadline': {
             state.data.deadline = ctx.message.text.trim();
             state.step = 'budget';
-            return ctx.reply('Укажите бюджет проекта (например: "100 000 руб." или "по договорённости"):', cancelKeyboard);
+            return ctx.reply('Укажите сколько готовы платить менеджеру (например: "100 000 руб." или "по договорённости"):', cancelKeyboard);
         }
         case 'budget': {
             state.data.budget = ctx.message.text.trim();
@@ -661,8 +837,11 @@ async function saveProject(ctx) {
                             reply_markup: {
                                 inline_keyboard: [
                                     [
-                                        { text: 'Согласиться', callback_data: `accept_invite_${project.id}` },
-                                        { text: 'Отказаться', callback_data: `decline_invite_${project.id}` }
+                                        { text: '📋 Подробнее о проекте и условиях', callback_data: `project_preview_${project.id}` }
+                                    ],
+                                    [
+                                        { text: '✅ Согласиться', callback_data: `accept_invite_${project.id}` },
+                                        { text: '❌ Отказаться', callback_data: `decline_invite_${project.id}` }
                                     ]
                                 ]
                             }
@@ -727,16 +906,40 @@ const deleteProject = async (ctx) => {
             return ctx.reply('❌ Нельзя удалить активный проект. Сначала измените статус на "Архив".');
         }
 
-        // Запрашиваем подтверждение
+        // Запрашиваем подтверждение с подробным предупреждением
         ctx.session = ctx.session || {};
         ctx.session.pendingDelete = {
             projectId: projectId,
             projectName: project.name
         };
 
-        await ctx.reply(
-            `🗑️ <b>Подтверждение удаления проекта</b>\n\n`
-        );
+        const warningMessage = 
+            `🗑️ <b>Подтверждение удаления проекта</b>\n\n` +
+            `📋 <b>Проект:</b> ${project.name}\n` +
+            `🆔 <b>ID:</b> ${projectId}\n` +
+            `📅 <b>Создан:</b> ${new Date(project.created_at).toLocaleDateString('ru-RU')}\n\n` +
+            `⚠️ <b>ВНИМАНИЕ!</b> После удаления проекта:\n` +
+            `• Все данные проекта будут безвозвратно удалены\n` +
+            `• Информация о менеджерах и исполнителях будет стерта\n` +
+            `• История чатов и сообщений будет удалена\n` +
+            `• Аудит лог проекта будет очищен\n\n` +
+            `🔒 <b>Это действие нельзя отменить!</b>\n\n` +
+            `Для подтверждения удаления введите вручную:\n` +
+            `<code>УДАЛИТЬ ${projectId}</code>\n\n` +
+            `Для отмены введите:\n` +
+            `<code>ОТМЕНА</code>`;
+
+        await ctx.reply(warningMessage, {
+            parse_mode: 'HTML',
+            reply_markup: {
+                keyboard: [
+                    [`🗑️ Удалить ${projectId}`],
+                    ['❌ Отменить удаление']
+                ],
+                resize_keyboard: true,
+                one_time_keyboard: true
+            }
+        });
     } catch (error) {
         console.error('[deleteProject] Error:', error);
         await ctx.reply('❌ Произошла ошибка при удалении проекта.');
@@ -749,9 +952,12 @@ const handleDeleteConfirmation = async (ctx) => {
         if (!ctx.session?.pendingDelete) {
             return false; // Не обрабатываем, если нет ожидающего удаления
         }
+        
         const { projectId, projectName } = ctx.session.pendingDelete;
-        const userInput = ctx.message.text.trim();
-        if (userInput === 'ОТМЕНА') {
+        const userInput = ctx.message.text.trim().toLowerCase();
+        
+        // Проверяем отмену
+        if (userInput === 'отмена' || userInput === 'cancel' || userInput === '❌ отменить удаление') {
             delete ctx.session.pendingDelete;
             await ctx.reply(
                 '✅ Удаление проекта отменено.',
@@ -759,39 +965,170 @@ const handleDeleteConfirmation = async (ctx) => {
             );
             return true;
         }
-        if (userInput === `УДАЛИТЬ ${projectId}`) {
-            // Сначала логируем операцию (до удаления проекта)
-            await AuditLog.logProjectDeleted(ctx.user.id, projectId, projectName);
-            // Затем выполняем удаление
-            const success = await Project.delete(projectId, ctx.user.id);
-            if (success) {
-                delete ctx.session.pendingDelete;
-                await ctx.reply(
-                    `✅ <b>Проект успешно удален!</b>\n\n` +
-                    `Проект: ${projectName}\n` +
-                    `ID: ${projectId}`,
-                    { 
-                        parse_mode: 'HTML',
-                        reply_markup: getKeyboardByRole(ctx.user.main_role).reply_markup
-                    }
-                );
-            } else {
-                await ctx.reply('❌ Не удалось удалить проект. Попробуйте позже.');
-            }
-            return true;
+        
+        // Проверяем подтверждение удаления через кнопку
+        if (userInput === `🗑️ удалить ${projectId}`.toLowerCase()) {
+            return await performProjectDeletion(ctx, projectId, projectName);
         }
-        // Неверный ввод
+        
+        // Проверяем ручной ввод команды удаления
+        if (userInput === `удалить ${projectId}`.toLowerCase()) {
+            return await performProjectDeletion(ctx, projectId, projectName);
+        }
+        
+        // Проверяем различные варианты подтверждения
+        const confirmVariants = ['да', 'yes', 'подтверждаю', 'удалить', 'удаляй'];
+        if (confirmVariants.includes(userInput)) {
+            return await performProjectDeletion(ctx, projectId, projectName);
+        }
+        
+        // Неверный ввод - показываем подсказку
         await ctx.reply(
-            '❌ Неверный ввод. Для подтверждения введите: <code>УДАЛИТЬ ' + projectId + '</code>\n' +
-            'Для отмены введите: <code>ОТМЕНА</code>',
-            { parse_mode: 'HTML' }
+            `❌ <b>Неверный ввод</b>\n\n` +
+            `Для подтверждения удаления:\n` +
+            `• Нажмите кнопку "🗑️ Удалить ${projectId}"\n` +
+            `• Или введите вручную: <code>УДАЛИТЬ ${projectId}</code>\n` +
+            `• Или просто: <code>да</code>, <code>yes</code>\n\n` +
+            `Для отмены:\n` +
+            `• Нажмите кнопку "❌ Отменить удаление"\n` +
+            `• Или введите: <code>отмена</code>`,
+            { 
+                parse_mode: 'HTML',
+                reply_markup: {
+                    keyboard: [
+                        [`🗑️ Удалить ${projectId}`],
+                        ['❌ Отменить удаление']
+                    ],
+                    resize_keyboard: true,
+                    one_time_keyboard: true
+                }
+            }
         );
         return true;
+        
     } catch (error) {
         console.error('[handleDeleteConfirmation] Error:', error);
         await ctx.reply('❌ Произошла ошибка при удалении проекта.');
         delete ctx.session.pendingDelete;
         return true;
+    }
+};
+
+// Вспомогательная функция для выполнения удаления проекта
+const performProjectDeletion = async (ctx, projectId, projectName) => {
+    try {
+        // Сначала логируем операцию (до удаления проекта)
+        await AuditLog.logProjectDeleted(ctx.user.id, projectId, projectName);
+        
+        // Затем выполняем удаление
+        const success = await Project.delete(projectId, ctx.user.id);
+        
+        if (success) {
+            delete ctx.session.pendingDelete;
+            await ctx.reply(
+                `✅ <b>Проект успешно удален!</b>\n\n` +
+                `📋 Проект: ${projectName}\n` +
+                `🆔 ID: ${projectId}\n\n` +
+                `🗑️ Все данные проекта были безвозвратно удалены.`,
+                { 
+                    parse_mode: 'HTML',
+                    reply_markup: getKeyboardByRole(ctx.user.main_role).reply_markup
+                }
+            );
+        } else {
+            await ctx.reply('❌ Не удалось удалить проект. Попробуйте позже.');
+        }
+        return true;
+    } catch (error) {
+        console.error('[performProjectDeletion] Error:', error);
+        await ctx.reply('❌ Произошла ошибка при удалении проекта.');
+        delete ctx.session.pendingDelete;
+        return true;
+    }
+};
+
+const projectPreview = async (ctx) => {
+    try {
+        console.log('=== PROJECT PREVIEW START ===');
+        console.log('Params:', ctx.params);
+        
+        const projectId = parseInt(ctx.params[0]);
+        console.log('Project ID from params:', projectId);
+        
+        // Валидируем ID проекта
+        const validation = validateProjectId(projectId);
+        if (!validation.isValid) {
+            console.log('Validation failed:', validation.error);
+            return ctx.reply(`❌ ${validation.error}`);
+        }
+
+        const project = await Project.findById(validation.id);
+        console.log('Project found:', project ? 'YES' : 'NO');
+        
+        if (!project) {
+            console.log('Project not found');
+            return ctx.reply('❌ Проект не найден.');
+        }
+
+        console.log('Project data:', {
+            id: project.id,
+            name: project.name,
+            status: project.status,
+            customer_id: project.customer_id
+        });
+
+        // Получаем заказчика
+        const customer = await User.findById(project.customer_id);
+        if (!customer) {
+            return ctx.reply('❌ Информация о заказчике недоступна.');
+        }
+
+        // Формируем сообщение с информацией о проекте
+        let message = `📋 <b>${project.name}</b>\n\n`;
+        message += `📝 <b>Описание:</b>\n${project.description}\n\n`;
+        
+        if (project.budget) {
+            message += `💰 <b>Бюджет:</b> ${project.budget}\n`;
+        }
+        
+        if (project.deadline) {
+            message += `⏰ <b>Срок:</b> ${project.deadline}\n`;
+        }
+        
+        if (project.requirements) {
+            message += `\n📋 <b>Требования к менеджеру:</b>\n${project.requirements}\n`;
+        }
+        
+        if (project.work_conditions) {
+            message += `\n⚙️ <b>Условия работы:</b>\n${project.work_conditions}\n`;
+        }
+        
+        if (project.additional_wishes) {
+            message += `\n💡 <b>Дополнительные пожелания:</b>\n${project.additional_wishes}\n`;
+        }
+        
+        message += `\n👤 <b>Заказчик:</b> @${customer.username || customer.first_name}\n`;
+        message += `📅 <b>Создан:</b> ${new Date(project.created_at).toLocaleDateString('ru-RU')}\n`;
+        message += `🆔 <b>ID проекта:</b> ${project.id}`;
+
+        // Показываем кнопки для менеджера
+        const replyMarkup = {
+            inline_keyboard: [
+                [
+                    { text: '✅ Согласиться', callback_data: `accept_invite_${project.id}` },
+                    { text: '❌ Отказаться', callback_data: `decline_invite_${project.id}` }
+                ]
+            ]
+        };
+
+        await ctx.reply(message, {
+            parse_mode: 'HTML',
+            reply_markup: replyMarkup
+        });
+
+    } catch (error) {
+        console.error('Error in projectPreview:', error);
+        await ctx.reply('❌ Произошла ошибка при загрузке информации о проекте.');
     }
 };
 
@@ -803,6 +1140,8 @@ module.exports = {
     handleCreateProjectStep,
     deleteProject,
     handleDeleteConfirmation,
+    performProjectDeletion,
     availableProjects: undefined, // если есть, добавить функцию
+    projectPreview,
     // Добавьте другие функции по необходимости
 };

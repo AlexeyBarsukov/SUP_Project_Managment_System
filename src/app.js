@@ -18,7 +18,10 @@ const {
     startCreateProject,
     handleCreateProjectStep,
     deleteProject,
-    handleDeleteConfirmation
+    handleDeleteConfirmation,
+    performProjectDeletion,
+    projectPreview,
+    // Добавьте другие функции по необходимости
 } = require('./bot/commands/projects');
 
 // Импорт команд профиля менеджера
@@ -207,7 +210,7 @@ bot.hears('⚙️ Профиль', roleCheck(), async (ctx) => {
         }
     }
     await ctx.reply(
-        `👤 <b>ВЫ ${roleNames[ctx.user.main_role] || ctx.user.main_role}</b>\n\n` +
+        `👤 <b>Вы - ${roleNames[ctx.user.main_role] || ctx.user.main_role}</b>\n\n` +
         `Имя: ${ctx.user.first_name} ${ctx.user.last_name || ''}\n` +
         `Основная роль: ${roleNames[ctx.user.main_role] || ctx.user.main_role}\n` +
         `Username: @${ctx.user.username || 'нет'}\n` +
@@ -563,35 +566,26 @@ bot.action(/^decline_invite_(\d+)$/, async (ctx) => {
     await ctx.answerCbQuery();
 });
 
-// Обработка подробного просмотра проекта менеджером
+// Обработка подробного просмотра проекта
 bot.action(/^project_details_(\d+)$/, async (ctx) => {
+    console.log('=== PROJECT DETAILS ACTION TRIGGERED ===');
+    console.log('User:', ctx.user?.id, ctx.user?.username);
+    console.log('Match:', ctx.match);
+    
     const projectId = ctx.match[1];
-    const project = await Project.findById(projectId);
-    if (!project) return ctx.reply('Проект не найден.');
-    // Получаем заказчика
-    const customer = await User.findById(project.customer_id);
-    let msg = `<b>${project.name}</b>\n`;
-    msg += `📝 <b>Описание:</b> ${project.description}\n`;
-    msg += `👤 <b>Заказчик:</b> @${customer?.username || 'не указан'}\n`;
-    msg += `🆔 <b>ID проекта:</b> ${project.id}\n`;
-    msg += `📅 <b>Создан:</b> ${new Date(project.created_at).toLocaleDateString('ru-RU')}\n`;
-    msg += `Бюджет: ${project.budget || 'не указан'}\n`;
-    msg += `Срок: ${project.deadline || 'не указан'}\n`;
-    msg += `\nТребования к менеджеру: ...\nУсловия работы: ...\nДоп. пожелания: ...\n`;
-    await ctx.reply(msg, {
-        parse_mode: 'HTML',
-        reply_markup: {
-            inline_keyboard: [
-                [
-                    { text: 'Принять', callback_data: `project_accept_${project.id}` },
-                    { text: 'Отклонить', callback_data: `project_decline_${project.id}` }
-                ],
-                [
-                    { text: 'Предложить условия', callback_data: `project_offer_${project.id}` }
-                ]
-            ]
-        }
-    });
+    console.log('=== PROJECT DETAILS ACTION ===');
+    console.log('Project ID from action:', projectId);
+    
+    // Создаем контекст для функции projectDetails
+    ctx.params = [projectId];
+    
+    try {
+        await projectDetails(ctx);
+    } catch (error) {
+        console.error('Error in project_details action:', error);
+        await ctx.reply('❌ Произошла ошибка при загрузке проекта.');
+    }
+    
     await ctx.answerCbQuery();
 });
 
@@ -641,6 +635,663 @@ bot.action(/^project_offer_(\d+)$/, async (ctx) => {
     ctx.session = ctx.session || {};
     ctx.session.projectOffer = { projectId };
     await ctx.reply('Введите ваши условия/предложение для заказчика (например: "Готов за 40 тыс., срок 3 недели"):');
+    await ctx.answerCbQuery();
+});
+
+// Заказчик назначает менеджера
+bot.action(/^assign_manager_(\d+)$/, async (ctx) => {
+    const projectId = ctx.match[1];
+    if (!ctx.user) ctx.user = await User.findByTelegramId(ctx.from.id);
+    const project = await Project.findById(projectId);
+    if (!project) return ctx.reply('Проект не найден.');
+    
+    // Проверяем права доступа
+    if (project.customer_id !== ctx.user.id) {
+        return ctx.reply('❌ У вас нет прав для управления этим проектом.');
+    }
+    
+    // Проверяем статус проекта
+    const allowedStatuses = ['active', 'searching_executors'];
+    if (!allowedStatuses.includes(project.status)) {
+        const statusNames = {
+            'draft': 'черновик',
+            'archived': 'архив',
+            'searching_manager': 'поиск менеджера',
+            'in_progress': 'в работе'
+        };
+        const statusName = statusNames[project.status] || project.status;
+        await ctx.reply(`❌ Управление менеджерами недоступно для проектов в статусе "${statusName}".\n\nКнопки управления менеджерами отображаются только для проектов в статусе "Активный" или "Поиск исполнителей".`);
+        return ctx.answerCbQuery();
+    }
+    
+    // Показываем список доступных менеджеров
+    const managers = await User.findVisibleByRole('manager');
+    if (!managers || managers.length === 0) {
+        await ctx.reply('❌ В системе пока нет доступных менеджеров с открытым профилем.');
+        return ctx.answerCbQuery();
+    }
+    
+    // Исключаем заказчика из списка
+    const availableManagers = managers.filter(m => m.id !== ctx.user.id);
+    if (availableManagers.length === 0) {
+        await ctx.reply('❌ Нет других менеджеров, кроме вас.');
+        return ctx.answerCbQuery();
+    }
+    
+    let list = '👨‍💼 <b>Выберите менеджера:</b>\n\n';
+    for (const m of availableManagers) {
+        let desc = [];
+        if (m.specialization) desc.push(m.specialization);
+        if (m.experience) desc.push(m.experience);
+        list += `• @${m.username} — ${m.first_name || ''} ${m.last_name || ''}`;
+        if (desc.length) list += `\n   ${desc.join(' | ')}`;
+        list += '\n';
+    }
+    
+    // Создаем кнопки для каждого менеджера
+    const buttons = availableManagers.map(m => [{
+        text: `@${m.username}`,
+        callback_data: `select_manager_${projectId}_${m.id}`
+    }]);
+    
+    await ctx.reply(list, {
+        parse_mode: 'HTML',
+        reply_markup: { inline_keyboard: buttons }
+    });
+    await ctx.answerCbQuery();
+});
+
+// Заказчик выбирает конкретного менеджера
+bot.action(/^select_manager_(\d+)_(\d+)$/, async (ctx) => {
+    const projectId = ctx.match[1];
+    const managerId = ctx.match[2];
+    if (!ctx.user) ctx.user = await User.findByTelegramId(ctx.from.id);
+    
+    const project = await Project.findById(projectId);
+    const manager = await User.findById(managerId);
+    if (!project || !manager) return ctx.reply('Проект или менеджер не найден.');
+    
+    // Проверяем права доступа
+    if (project.customer_id !== ctx.user.id) {
+        return ctx.reply('❌ У вас нет прав для управления этим проектом.');
+    }
+    
+    // Удаляем заказчика из роли менеджера
+    await ProjectManager.deleteByProjectAndManager(projectId, ctx.user.id);
+    await Project.removeUserFromProjectRoles(ctx.user.id, projectId, 'manager');
+    
+    // Добавляем нового менеджера
+    await Project.addUserToProjectRoles(managerId, projectId, 'manager');
+    await ProjectManager.create({ project_id: projectId, manager_id: managerId, status: 'pending' });
+    
+    // Отправляем уведомление менеджеру
+    await ctx.telegram.sendMessage(
+        manager.telegram_id,
+        `Вас назначили менеджером проекта "${project.name}" от ${ctx.user.first_name} ${ctx.user.last_name || ''}`,
+        {
+            reply_markup: {
+                inline_keyboard: [
+                    [
+                        { text: '📋 Подробнее о проекте и условиях', callback_data: `project_preview_${project.id}` }
+                    ],
+                    [
+                        { text: '✅ Согласиться', callback_data: `accept_invite_${project.id}` },
+                        { text: '❌ Отказаться', callback_data: `decline_invite_${project.id}` }
+                    ]
+                ]
+            }
+        }
+    );
+    
+    await ctx.reply(`✅ Менеджер @${manager.username} назначен и уведомлен!`);
+    await ctx.answerCbQuery();
+});
+
+// Заказчик убирает менеджера
+bot.action(/^remove_manager_(\d+)$/, async (ctx) => {
+    const projectId = ctx.match[1];
+    if (!ctx.user) ctx.user = await User.findByTelegramId(ctx.from.id);
+    const project = await Project.findById(projectId);
+    if (!project) return ctx.reply('Проект не найден.');
+    
+    // Проверяем права доступа
+    if (project.customer_id !== ctx.user.id) {
+        return ctx.reply('❌ У вас нет прав для управления этим проектом.');
+    }
+    
+    // Получаем всех менеджеров проекта
+    const managers = await ProjectManager.findByProject(projectId);
+    const acceptedManagers = managers.filter(m => m.status === 'accepted');
+    
+    if (acceptedManagers.length === 0) {
+        await ctx.reply('❌ В проекте нет принятых менеджеров для удаления.');
+        return ctx.answerCbQuery();
+    }
+    
+    // Показываем список менеджеров для удаления
+    let list = '❌ <b>Выберите менеджера для удаления:</b>\n\n';
+    const buttons = [];
+    
+    for (const m of acceptedManagers) {
+        const user = await User.findById(m.manager_id);
+        if (user) {
+            list += `• @${user.username} — ${user.first_name || ''} ${user.last_name || ''}\n`;
+            buttons.push([{
+                text: `Удалить @${user.username}`,
+                callback_data: `confirm_remove_manager_${projectId}_${m.manager_id}`
+            }]);
+        }
+    }
+    
+    await ctx.reply(list, {
+        parse_mode: 'HTML',
+        reply_markup: { inline_keyboard: buttons }
+    });
+    await ctx.answerCbQuery();
+});
+
+// Заказчик подтверждает удаление менеджера
+bot.action(/^confirm_remove_manager_(\d+)_(\d+)$/, async (ctx) => {
+    const projectId = ctx.match[1];
+    const managerId = ctx.match[2];
+    if (!ctx.user) ctx.user = await User.findByTelegramId(ctx.from.id);
+    
+    const project = await Project.findById(projectId);
+    const manager = await User.findById(managerId);
+    if (!project || !manager) return ctx.reply('Проект или менеджер не найден.');
+    
+    // Проверяем права доступа
+    if (project.customer_id !== ctx.user.id) {
+        return ctx.reply('❌ У вас нет прав для управления этим проектом.');
+    }
+    
+    // Получаем всех менеджеров проекта
+    const allManagers = await ProjectManager.findByProject(projectId);
+    const acceptedManagers = allManagers.filter(m => m.status === 'accepted');
+    
+    // Удаляем менеджера
+    await ProjectManager.deleteByProjectAndManager(projectId, managerId);
+    await Project.removeUserFromProjectRoles(managerId, projectId, 'manager');
+    
+    // Уведомляем менеджера
+    await ctx.telegram.sendMessage(
+        manager.telegram_id,
+        `Вас удалили из проекта "${project.name}"`
+    );
+    
+    let responseMessage = `✅ Менеджер @${manager.username} удален из проекта!`;
+    
+    // Если это был единственный принятый менеджер, автоматически назначаем заказчика
+    if (acceptedManagers.length === 1) {
+        // Добавляем заказчика как менеджера
+        await Project.addUserToProjectRoles(ctx.user.id, projectId, 'manager');
+        await ProjectManager.create({ 
+            project_id: projectId, 
+            manager_id: ctx.user.id, 
+            status: 'accepted' 
+        });
+        
+        responseMessage += '\n\n👨‍💼 <b>Внимание!</b> Поскольку это был единственный менеджер, вы автоматически назначены менеджером проекта.';
+    }
+    
+    await ctx.reply(responseMessage, { parse_mode: 'HTML' });
+    await ctx.answerCbQuery();
+});
+
+// Заказчик добавляет дополнительного менеджера
+bot.action(/^add_manager_(\d+)$/, async (ctx) => {
+    const projectId = ctx.match[1];
+    if (!ctx.user) ctx.user = await User.findByTelegramId(ctx.from.id);
+    const project = await Project.findById(projectId);
+    if (!project) return ctx.reply('Проект не найден.');
+    
+    // Проверяем права доступа
+    if (project.customer_id !== ctx.user.id) {
+        return ctx.reply('❌ У вас нет прав для управления этим проектом.');
+    }
+    
+    // Проверяем статус проекта
+    const allowedStatuses = ['active', 'searching_executors'];
+    if (!allowedStatuses.includes(project.status)) {
+        const statusNames = {
+            'draft': 'черновик',
+            'archived': 'архив',
+            'searching_manager': 'поиск менеджера',
+            'in_progress': 'в работе'
+        };
+        const statusName = statusNames[project.status] || project.status;
+        await ctx.reply(`❌ Управление менеджерами недоступно для проектов в статусе "${statusName}".\n\nКнопки управления менеджерами отображаются только для проектов в статусе "Активный" или "Поиск исполнителей".`);
+        return ctx.answerCbQuery();
+    }
+    
+    // Показываем список доступных менеджеров
+    const managers = await User.findVisibleByRole('manager');
+    if (!managers || managers.length === 0) {
+        await ctx.reply('❌ В системе пока нет доступных менеджеров с открытым профилем.');
+        return ctx.answerCbQuery();
+    }
+    
+    // Исключаем заказчика и уже добавленных менеджеров
+    const existingManagers = await ProjectManager.findByProject(projectId);
+    const existingManagerIds = existingManagers.map(m => m.manager_id);
+    const availableManagers = managers.filter(m => 
+        m.id !== ctx.user.id && !existingManagerIds.includes(m.id)
+    );
+    
+    if (availableManagers.length === 0) {
+        await ctx.reply('❌ Нет доступных менеджеров для добавления.');
+        return ctx.answerCbQuery();
+    }
+    
+    let list = '➕ <b>Выберите дополнительного менеджера:</b>\n\n';
+    for (const m of availableManagers) {
+        let desc = [];
+        if (m.specialization) desc.push(m.specialization);
+        if (m.experience) desc.push(m.experience);
+        list += `• @${m.username} — ${m.first_name || ''} ${m.last_name || ''}`;
+        if (desc.length) list += `\n   ${desc.join(' | ')}`;
+        list += '\n';
+    }
+    
+    // Создаем кнопки для каждого менеджера
+    const buttons = availableManagers.map(m => [{
+        text: `@${m.username}`,
+        callback_data: `add_manager_select_${projectId}_${m.id}`
+    }]);
+    
+    await ctx.reply(list, {
+        parse_mode: 'HTML',
+        reply_markup: { inline_keyboard: buttons }
+    });
+    await ctx.answerCbQuery();
+});
+
+// Заказчик выбирает дополнительного менеджера
+bot.action(/^add_manager_select_(\d+)_(\d+)$/, async (ctx) => {
+    const projectId = ctx.match[1];
+    const managerId = ctx.match[2];
+    if (!ctx.user) ctx.user = await User.findByTelegramId(ctx.from.id);
+    
+    const project = await Project.findById(projectId);
+    const manager = await User.findById(managerId);
+    if (!project || !manager) return ctx.reply('Проект или менеджер не найден.');
+    
+    // Проверяем права доступа
+    if (project.customer_id !== ctx.user.id) {
+        return ctx.reply('❌ У вас нет прав для управления этим проектом.');
+    }
+    
+    // Проверяем лимит менеджеров (максимум 3)
+    const existingManagers = await ProjectManager.findByProject(projectId);
+    const totalManagers = existingManagers.length;
+    
+    if (totalManagers >= 3) {
+        await ctx.reply('❌ Достигнут лимит менеджеров (максимум 3). Невозможно добавить еще одного менеджера.');
+        return ctx.answerCbQuery();
+    }
+    
+    // Добавляем менеджера
+    await Project.addUserToProjectRoles(managerId, projectId, 'manager');
+    await ProjectManager.create({ project_id: projectId, manager_id: managerId, status: 'pending' });
+    
+    // Отправляем уведомление менеджеру
+    await ctx.telegram.sendMessage(
+        manager.telegram_id,
+        `Вас пригласили как дополнительного менеджера в проект "${project.name}" от ${ctx.user.first_name} ${ctx.user.last_name || ''}`,
+        {
+            reply_markup: {
+                inline_keyboard: [
+                    [
+                        { text: '📋 Подробнее о проекте и условиях', callback_data: `project_preview_${project.id}` }
+                    ],
+                    [
+                        { text: '✅ Согласиться', callback_data: `accept_invite_${project.id}` },
+                        { text: '❌ Отказаться', callback_data: `decline_invite_${project.id}` }
+                    ]
+                ]
+            }
+        }
+    );
+    
+    await ctx.reply(`✅ Дополнительный менеджер @${manager.username} приглашен!`);
+    await ctx.answerCbQuery();
+});
+
+// Заказчик ищет менеджера по никнейму
+bot.action(/^search_manager_(\d+)$/, async (ctx) => {
+    const projectId = ctx.match[1];
+    if (!ctx.user) ctx.user = await User.findByTelegramId(ctx.from.id);
+    const project = await Project.findById(projectId);
+    if (!project) return ctx.reply('Проект не найден.');
+    
+    // Проверяем права доступа
+    if (project.customer_id !== ctx.user.id) {
+        return ctx.reply('❌ У вас нет прав для управления этим проектом.');
+    }
+    
+    // Проверяем лимит менеджеров
+    const existingManagers = await ProjectManager.findByProject(projectId);
+    if (existingManagers.length >= 3) {
+        await ctx.reply('❌ Достигнут лимит менеджеров (максимум 3). Невозможно добавить еще одного менеджера.');
+        return ctx.answerCbQuery();
+    }
+    
+    // Начинаем поиск по никнейму
+    ctx.session = ctx.session || {};
+    ctx.session.searchingManager = true;
+    ctx.session.searchProjectId = projectId;
+    
+    await ctx.reply(
+        '🔍 <b>Поиск менеджера по никнейму</b>\n\n' +
+        'Введите никнейм менеджера (без @):',
+        { 
+            parse_mode: 'HTML',
+            reply_markup: {
+                keyboard: [['❌ Отменить поиск']],
+                resize_keyboard: true,
+                one_time_keyboard: true
+            }
+        }
+    );
+    await ctx.answerCbQuery();
+});
+
+// Заказчик меняет менеджера
+bot.action(/^change_manager_(\d+)$/, async (ctx) => {
+    const projectId = ctx.match[1];
+    if (!ctx.user) ctx.user = await User.findByTelegramId(ctx.from.id);
+    const project = await Project.findById(projectId);
+    if (!project) return ctx.reply('Проект не найден.');
+    
+    // Проверяем права доступа
+    if (project.customer_id !== ctx.user.id) {
+        return ctx.reply('❌ У вас нет прав для управления этим проектом.');
+    }
+    
+    // Получаем текущих менеджеров
+    const currentManagers = await ProjectManager.findByProject(projectId);
+    const acceptedManagers = currentManagers.filter(m => m.status === 'accepted');
+    
+    if (acceptedManagers.length === 0) {
+        await ctx.reply('❌ В проекте нет принятых менеджеров для смены.');
+        return ctx.answerCbQuery();
+    }
+    
+    // Показываем список текущих менеджеров для смены
+    let list = '🔄 <b>Выберите менеджера для замены:</b>\n\n';
+    const buttons = [];
+    
+    for (const m of acceptedManagers) {
+        const user = await User.findById(m.manager_id);
+        if (user) {
+            list += `• @${user.username} — ${user.first_name || ''} ${user.last_name || ''}\n`;
+            buttons.push([{
+                text: `Сменить @${user.username}`,
+                callback_data: `change_manager_select_${projectId}_${m.manager_id}`
+            }]);
+        }
+    }
+    
+    await ctx.reply(list, {
+        parse_mode: 'HTML',
+        reply_markup: { inline_keyboard: buttons }
+    });
+    await ctx.answerCbQuery();
+});
+
+// Заказчик выбирает менеджера для замены
+bot.action(/^change_manager_select_(\d+)_(\d+)$/, async (ctx) => {
+    const projectId = ctx.match[1];
+    const oldManagerId = ctx.match[2];
+    if (!ctx.user) ctx.user = await User.findByTelegramId(ctx.from.id);
+    
+    const project = await Project.findById(projectId);
+    const oldManager = await User.findById(oldManagerId);
+    if (!project || !oldManager) return ctx.reply('Проект или менеджер не найден.');
+    
+    // Проверяем права доступа
+    if (project.customer_id !== ctx.user.id) {
+        return ctx.reply('❌ У вас нет прав для управления этим проектом.');
+    }
+    
+    // Проверяем статус проекта
+    const allowedStatuses = ['active', 'searching_executors'];
+    if (!allowedStatuses.includes(project.status)) {
+        const statusNames = {
+            'draft': 'черновик',
+            'archived': 'архив',
+            'searching_manager': 'поиск менеджера',
+            'in_progress': 'в работе'
+        };
+        const statusName = statusNames[project.status] || project.status;
+        await ctx.reply(`❌ Управление менеджерами недоступно для проектов в статусе "${statusName}".\n\nКнопки управления менеджерами отображаются только для проектов в статусе "Активный" или "Поиск исполнителей".`);
+        return ctx.answerCbQuery();
+    }
+    
+    // Показываем список доступных менеджеров для замены
+    const managers = await User.findVisibleByRole('manager');
+    if (!managers || managers.length === 0) {
+        await ctx.reply('❌ В системе пока нет доступных менеджеров с открытым профилем.');
+        return ctx.answerCbQuery();
+    }
+    
+    // Исключаем заказчика и текущего менеджера
+    const availableManagers = managers.filter(m => 
+        m.id !== ctx.user.id && m.id !== oldManagerId
+    );
+    
+    if (availableManagers.length === 0) {
+        await ctx.reply('❌ Нет других менеджеров для замены.');
+        return ctx.answerCbQuery();
+    }
+    
+    let list = `🔄 <b>Выберите нового менеджера для замены @${oldManager.username}:</b>\n\n`;
+    for (const m of availableManagers) {
+        let desc = [];
+        if (m.specialization) desc.push(m.specialization);
+        if (m.experience) desc.push(m.experience);
+        list += `• @${m.username} — ${m.first_name || ''} ${m.last_name || ''}`;
+        if (desc.length) list += `\n   ${desc.join(' | ')}`;
+        list += '\n';
+    }
+    
+    // Создаем кнопки для каждого менеджера
+    const buttons = availableManagers.map(m => [{
+        text: `@${m.username}`,
+        callback_data: `change_manager_confirm_${projectId}_${oldManagerId}_${m.id}`
+    }]);
+    
+    await ctx.reply(list, {
+        parse_mode: 'HTML',
+        reply_markup: { inline_keyboard: buttons }
+    });
+    await ctx.answerCbQuery();
+});
+
+// Заказчик подтверждает смену менеджера
+bot.action(/^change_manager_confirm_(\d+)_(\d+)_(\d+)$/, async (ctx) => {
+    const projectId = ctx.match[1];
+    const oldManagerId = ctx.match[2];
+    const newManagerId = ctx.match[3];
+    if (!ctx.user) ctx.user = await User.findByTelegramId(ctx.from.id);
+    
+    const project = await Project.findById(projectId);
+    const oldManager = await User.findById(oldManagerId);
+    const newManager = await User.findById(newManagerId);
+    if (!project || !oldManager || !newManager) return ctx.reply('Проект или менеджер не найден.');
+    
+    // Проверяем права доступа
+    if (project.customer_id !== ctx.user.id) {
+        return ctx.reply('❌ У вас нет прав для управления этим проектом.');
+    }
+    
+    // Удаляем старого менеджера
+    await ProjectManager.deleteByProjectAndManager(projectId, oldManagerId);
+    await Project.removeUserFromProjectRoles(oldManagerId, projectId, 'manager');
+    
+    // Добавляем нового менеджера
+    await Project.addUserToProjectRoles(newManagerId, projectId, 'manager');
+    await ProjectManager.create({ project_id: projectId, manager_id: newManagerId, status: 'pending' });
+    
+    // Уведомляем старого менеджера
+    await ctx.telegram.sendMessage(
+        oldManager.telegram_id,
+        `Вас заменили на менеджера в проекте "${project.name}"`
+    );
+    
+    // Отправляем уведомление новому менеджеру
+    await ctx.telegram.sendMessage(
+        newManager.telegram_id,
+        `Вас назначили менеджером проекта "${project.name}" от ${ctx.user.first_name} ${ctx.user.last_name || ''}`,
+        {
+            reply_markup: {
+                inline_keyboard: [
+                    [
+                        { text: '📋 Подробнее о проекте и условиях', callback_data: `project_preview_${project.id}` }
+                    ],
+                    [
+                        { text: '✅ Согласиться', callback_data: `accept_invite_${project.id}` },
+                        { text: '❌ Отказаться', callback_data: `decline_invite_${project.id}` }
+                    ]
+                ]
+            }
+        }
+    );
+    
+    await ctx.reply(`✅ Менеджер @${oldManager.username} заменен на @${newManager.username}!`);
+    await ctx.answerCbQuery();
+});
+
+// Заказчик изменяет статус проекта
+bot.action(/^change_status_(\d+)$/, async (ctx) => {
+    const projectId = ctx.match[1];
+    if (!ctx.user) ctx.user = await User.findByTelegramId(ctx.from.id);
+    const project = await Project.findById(projectId);
+    if (!project) return ctx.reply('Проект не найден.');
+    
+    // Проверяем права доступа
+    if (project.customer_id !== ctx.user.id) {
+        return ctx.reply('❌ У вас нет прав для управления этим проектом.');
+    }
+    
+    const statusButtons = [
+        [
+            { text: '📝 Черновик', callback_data: `set_status_${projectId}_draft` },
+            { text: '🚀 Активный', callback_data: `set_status_${projectId}_active` }
+        ],
+        [
+            { text: '🚧 В работе', callback_data: `set_status_${projectId}_in_progress` },
+            { text: '📦 Архив', callback_data: `set_status_${projectId}_archived` }
+        ]
+    ];
+    
+    await ctx.reply('📊 <b>Выберите новый статус проекта:</b>', {
+        parse_mode: 'HTML',
+        reply_markup: { inline_keyboard: statusButtons }
+    });
+    await ctx.answerCbQuery();
+});
+
+// Заказчик устанавливает статус проекта
+bot.action(/^set_status_(\d+)_(.+)$/, async (ctx) => {
+    const projectId = ctx.match[1];
+    const newStatus = ctx.match[2];
+    if (!ctx.user) ctx.user = await User.findByTelegramId(ctx.from.id);
+    
+    const project = await Project.findById(projectId);
+    if (!project) return ctx.reply('Проект не найден.');
+    
+    // Проверяем права доступа
+    if (project.customer_id !== ctx.user.id) {
+        return ctx.reply('❌ У вас нет прав для управления этим проектом.');
+    }
+    
+    // Обновляем статус
+    await Project.updateStatus(projectId, newStatus);
+    
+    const statusNames = {
+        'draft': '📝 Черновик',
+        'active': '🚀 Активный',
+        'in_progress': '🚧 В работе',
+        'archived': '📦 Архив'
+    };
+    
+    await ctx.reply(`✅ Статус проекта изменен на: ${statusNames[newStatus] || newStatus}`);
+    await ctx.answerCbQuery();
+});
+
+// Заказчик удаляет проект через кнопку
+bot.action(/^delete_project_(\d+)$/, async (ctx) => {
+    const projectId = ctx.match[1];
+    if (!ctx.user) ctx.user = await User.findByTelegramId(ctx.from.id);
+    const project = await Project.findById(projectId);
+    if (!project) return ctx.reply('Проект не найден.');
+    
+    // Проверяем права доступа
+    if (project.customer_id !== ctx.user.id) {
+        return ctx.reply('❌ У вас нет прав для удаления этого проекта.');
+    }
+    
+    // Проверяем, что проект не активен
+    if (project.status === 'active') {
+        return ctx.reply('❌ Нельзя удалить активный проект. Сначала измените статус на "Архив".');
+    }
+    
+    // Запрашиваем подтверждение
+    await ctx.reply(
+        `🗑️ <b>Подтверждение удаления проекта</b>\n\n` +
+        `📋 <b>Проект:</b> ${project.name}\n` +
+        `🆔 <b>ID:</b> ${projectId}\n\n` +
+        `⚠️ <b>ВНИМАНИЕ!</b> Это действие нельзя отменить!\n\n` +
+        `Вы уверены, что хотите удалить проект?`,
+        {
+            parse_mode: 'HTML',
+            reply_markup: {
+                inline_keyboard: [
+                    [
+                        { text: '✅ Да, удалить', callback_data: `confirm_delete_${projectId}` },
+                        { text: '❌ Отмена', callback_data: `cancel_delete_${projectId}` }
+                    ]
+                ]
+            }
+        }
+    );
+    await ctx.answerCbQuery();
+});
+
+// Заказчик подтверждает удаление проекта
+bot.action(/^confirm_delete_(\d+)$/, async (ctx) => {
+    const projectId = ctx.match[1];
+    if (!ctx.user) ctx.user = await User.findByTelegramId(ctx.from.id);
+    
+    const project = await Project.findById(projectId);
+    if (!project) return ctx.reply('Проект не найден.');
+    
+    // Проверяем права доступа
+    if (project.customer_id !== ctx.user.id) {
+        return ctx.reply('❌ У вас нет прав для удаления этого проекта.');
+    }
+    
+    // Выполняем удаление
+    const success = await Project.delete(projectId, ctx.user.id);
+    
+    if (success) {
+        await ctx.reply(
+            `✅ <b>Проект успешно удален!</b>\n\n` +
+            `📋 Проект: ${project.name}\n` +
+            `🆔 ID: ${projectId}\n\n` +
+            `🗑️ Все данные проекта были безвозвратно удалены.`,
+            { parse_mode: 'HTML' }
+        );
+    } else {
+        await ctx.reply('❌ Не удалось удалить проект. Попробуйте позже.');
+    }
+    await ctx.answerCbQuery();
+});
+
+// Заказчик отменяет удаление проекта
+bot.action(/^cancel_delete_(\d+)$/, async (ctx) => {
+    await ctx.reply('✅ Удаление проекта отменено.');
     await ctx.answerCbQuery();
 });
 
@@ -723,6 +1374,174 @@ bot.on('text', async (ctx, next) => {
         delete ctx.session.projectOffer;
         return;
     }
+    
+    // Обработка поиска менеджера по никнейму
+    if (ctx.session?.searchingManager) {
+        const projectId = ctx.session.searchProjectId;
+        const username = ctx.message.text.replace(/^@/, ''); // Убираем @ если есть
+        
+        // Обработка отмены поиска
+        if (ctx.message.text === '❌ Отменить поиск') {
+            delete ctx.session.searchingManager;
+            delete ctx.session.searchProjectId;
+            await ctx.reply(
+                '✅ Поиск менеджера отменен.',
+                {
+                    reply_markup: {
+                        keyboard: [['📋 Мои проекты']],
+                        resize_keyboard: true
+                    }
+                }
+            );
+            return;
+        }
+        
+        if (!ctx.user) ctx.user = await User.findByTelegramId(ctx.from.id);
+        const project = await Project.findById(projectId);
+        if (!project) return ctx.reply('Проект не найден.');
+        
+        // Проверяем права доступа
+        if (project.customer_id !== ctx.user.id) {
+            return ctx.reply('❌ У вас нет прав для управления этим проектом.');
+        }
+        
+        // Проверяем статус проекта
+        const allowedStatuses = ['active', 'searching_executors'];
+        if (!allowedStatuses.includes(project.status)) {
+            const statusNames = {
+                'draft': 'черновик',
+                'archived': 'архив',
+                'searching_manager': 'поиск менеджера',
+                'in_progress': 'в работе'
+            };
+            const statusName = statusNames[project.status] || project.status;
+            await ctx.reply(`❌ Управление менеджерами недоступно для проектов в статусе "${statusName}".\n\nКнопки управления менеджерами отображаются только для проектов в статусе "Активный" или "Поиск исполнителей".`);
+            return ctx.answerCbQuery();
+        }
+        
+        // Ищем менеджера по никнейму
+        const manager = await User.findByUsername(username);
+        if (!manager) {
+            await ctx.reply(
+                '❌ Менеджер с таким никнеймом не найден.\n\n' +
+                'Попробуйте еще раз или нажмите "❌ Отменить поиск":',
+                {
+                    reply_markup: {
+                        keyboard: [['❌ Отменить поиск']],
+                        resize_keyboard: true,
+                        one_time_keyboard: true
+                    }
+                }
+            );
+            return;
+        }
+        
+        // Проверяем, что это менеджер
+        if (manager.main_role !== 'manager') {
+            await ctx.reply(
+                '❌ Пользователь с таким никнеймом не является менеджером.\n\n' +
+                'Попробуйте еще раз или нажмите "❌ Отменить поиск":',
+                {
+                    reply_markup: {
+                        keyboard: [['❌ Отменить поиск']],
+                        resize_keyboard: true,
+                        one_time_keyboard: true
+                    }
+                }
+            );
+            return;
+        }
+        
+        // Проверяем, что менеджер не заказчик
+        if (manager.id === ctx.user.id) {
+            await ctx.reply(
+                '❌ Вы не можете добавить себя как менеджера.\n\n' +
+                'Попробуйте еще раз или нажмите "❌ Отменить поиск":',
+                {
+                    reply_markup: {
+                        keyboard: [['❌ Отменить поиск']],
+                        resize_keyboard: true,
+                        one_time_keyboard: true
+                    }
+                }
+            );
+            return;
+        }
+        
+        // Проверяем, что менеджер уже не добавлен
+        const existingManagers = await ProjectManager.findByProject(projectId);
+        const isAlreadyManager = existingManagers.some(m => m.manager_id === manager.id);
+        if (isAlreadyManager) {
+            await ctx.reply(
+                '❌ Этот менеджер уже добавлен в проект.\n\n' +
+                'Попробуйте еще раз или нажмите "❌ Отменить поиск":',
+                {
+                    reply_markup: {
+                        keyboard: [['❌ Отменить поиск']],
+                        resize_keyboard: true,
+                        one_time_keyboard: true
+                    }
+                }
+            );
+            return;
+        }
+        
+        // Проверяем лимит менеджеров
+        if (existingManagers.length >= 3) {
+            await ctx.reply(
+                '❌ Достигнут лимит менеджеров (максимум 3).\n\n' +
+                'Попробуйте еще раз или нажмите "❌ Отменить поиск":',
+                {
+                    reply_markup: {
+                        keyboard: [['❌ Отменить поиск']],
+                        resize_keyboard: true,
+                        one_time_keyboard: true
+                    }
+                }
+            );
+            return;
+        }
+        
+        // Добавляем менеджера
+        await Project.addUserToProjectRoles(manager.id, projectId, 'manager');
+        await ProjectManager.create({ project_id: projectId, manager_id: manager.id, status: 'pending' });
+        
+        // Отправляем уведомление менеджеру
+        await ctx.telegram.sendMessage(
+            manager.telegram_id,
+            `Вас пригласили как менеджера в проект "${project.name}" от ${ctx.user.first_name} ${ctx.user.last_name || ''}`,
+            {
+                reply_markup: {
+                    inline_keyboard: [
+                        [
+                            { text: '📋 Подробнее о проекте и условиях', callback_data: `project_preview_${project.id}` }
+                        ],
+                        [
+                            { text: '✅ Согласиться', callback_data: `accept_invite_${project.id}` },
+                            { text: '❌ Отказаться', callback_data: `decline_invite_${project.id}` }
+                        ]
+                    ]
+                }
+            }
+        );
+        
+        // Очищаем сессию поиска
+        delete ctx.session.searchingManager;
+        delete ctx.session.searchProjectId;
+        
+        await ctx.reply(
+            `✅ Менеджер @${manager.username} найден и приглашен в проект!\n\n` +
+            `Ожидаем его ответа...`,
+            {
+                reply_markup: {
+                    keyboard: [['📋 Мои проекты']],
+                    resize_keyboard: true
+                }
+            }
+        );
+        return;
+    }
+    
     return next();
 });
 
@@ -896,6 +1715,28 @@ bot.command('stopchat', async (ctx) => {
     } else {
         await ctx.reply('У вас нет активного чата.');
     }
+});
+
+// Обработка предварительного просмотра проекта (для менеджеров)
+bot.action(/^project_preview_(\d+)$/, async (ctx) => {
+    console.log('=== PROJECT PREVIEW ACTION TRIGGERED ===');
+    console.log('User:', ctx.user?.id, ctx.user?.username);
+    console.log('Match:', ctx.match);
+    
+    const projectId = ctx.match[1];
+    console.log('Project ID from preview action:', projectId);
+    
+    // Создаем контекст для функции projectPreview
+    ctx.params = [projectId];
+    
+    try {
+        await projectPreview(ctx);
+    } catch (error) {
+        console.error('Error in project_preview action:', error);
+        await ctx.reply('❌ Произошла ошибка при загрузке информации о проекте.');
+    }
+    
+    await ctx.answerCbQuery();
 });
 
 // Запуск бота
