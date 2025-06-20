@@ -207,7 +207,7 @@ bot.hears('⚙️ Профиль', roleCheck(), async (ctx) => {
         }
     }
     await ctx.reply(
-        `👤 <b>Ваш профиль</b>\n\n` +
+        `👤 <b>ВЫ ${roleNames[ctx.user.main_role] || ctx.user.main_role}</b>\n\n` +
         `Имя: ${ctx.user.first_name} ${ctx.user.last_name || ''}\n` +
         `Основная роль: ${roleNames[ctx.user.main_role] || ctx.user.main_role}\n` +
         `Username: @${ctx.user.username || 'нет'}\n` +

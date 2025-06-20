@@ -6,6 +6,8 @@
   "scripts": {
     "start": "node src/app.js",
     "dev": "nodemon src/app.js",
+    "dev:watch": "nodemon --watch src --ext js,json --exec 'node src/app.js'",
+    "dev:debug": "nodemon --inspect src/app.js",
     "test": "jest"
   },
   "keywords": ["telegram", "bot", "project-management", "nodejs"],

@@ -1,0 +1,19 @@
+{
+  "watch": [
+    "src/**/*.js",
+    "package.json"
+  ],
+  "ignore": [
+    "node_modules/**/*",
+    "*.log",
+    "*.json",
+    "db/**/*",
+    ".git/**/*"
+  ],
+  "ext": "js,json",
+  "env": {
+    "NODE_ENV": "development"
+  },
+  "delay": 1000,
+  "verbose": true
+} 
