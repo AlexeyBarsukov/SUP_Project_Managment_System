@@ -127,6 +127,133 @@ const validateProject = (projectName, description) => {
     return { isValid: true };
 };
 
+// Константы валидации профиля менеджера
+const PROFILE_VALIDATION = {
+    SPECIALIZATION: {
+        maxLength: 300,
+        pattern: /^[а-яёa-z0-9\s,.-]+$/i,
+        example: "IT-проекты, управление"
+    },
+    EXPERIENCE: {
+        maxLength: 300,
+        pattern: /^[а-яёa-z0-9\s,.-]+$/i,
+        example: "3+ года в fintech"
+    },
+    SKILLS: {
+        maxLength: 300,
+        pattern: /^[а-яёa-z0-9\s,.-]+$/i,
+        example: "Jira, Scrum, Python"
+    },
+    SALARY_RANGE: {
+        maxLength: 50,
+        pattern: /^[а-яёa-z0-9\s,.-–—()]+$/i,
+        example: "от 50 000 руб."
+    },
+    CONTACTS: {
+        maxLength: 100,
+        pattern: /^[@a-zA-Z0-9_+\-()\s]+$/,
+        example: "@username или +79041234567"
+    }
+};
+
+/**
+ * Валидирует поле профиля менеджера
+ * @param {string} field - название поля
+ * @param {string} value - значение для проверки
+ * @returns {object} {isValid: boolean, error: string|null, remaining: number}
+ */
+function validateProfileField(field, value) {
+    const config = PROFILE_VALIDATION[field.toUpperCase()];
+    if (!config) {
+        return { isValid: false, error: 'Неизвестное поле профиля', remaining: 0 };
+    }
+
+    const length = value.length;
+    const remaining = config.maxLength - length;
+
+    // Проверка длины
+    if (length > config.maxLength) {
+        return {
+            isValid: false,
+            error: `❌ Превышен лимит (${length}/${config.maxLength})`,
+            remaining: 0
+        };
+    }
+
+    // Проверка формата (если есть паттерн)
+    if (config.pattern && !config.pattern.test(value)) {
+        return {
+            isValid: false,
+            error: `❌ Некорректный формат. Пример: ${config.example}`,
+            remaining
+        };
+    }
+
+    return { isValid: true, error: null, remaining };
+}
+
+/**
+ * Форматирует сообщение с счетчиком символов
+ * @param {string} field - название поля
+ * @param {string} value - текущее значение
+ * @returns {string} отформатированное сообщение
+ */
+function formatFieldCounter(field, value) {
+    const config = PROFILE_VALIDATION[field.toUpperCase()];
+    if (!config) return '';
+
+    const length = value.length;
+    const remaining = config.maxLength - length;
+    const percentage = Math.round((length / config.maxLength) * 100);
+    
+    let status = '✅';
+    if (percentage > 90) status = '⚠️';
+    if (percentage > 100) status = '❌';
+    
+    return `\n${status} ${length}/${config.maxLength} символов`;
+}
+
+/**
+ * Проверяет, можно ли сохранить профиль
+ * @param {object} profileData - данные профиля
+ * @returns {object} {canSave: boolean, errors: array}
+ */
+function validateProfileData(profileData) {
+    const errors = [];
+    
+    // Обязательные поля
+    const requiredFields = ['specialization', 'experience', 'skills', 'salary_range', 'contacts'];
+    
+    for (const field of requiredFields) {
+        if (!profileData[field]) {
+            errors.push(`${field}: Обязательное поле`);
+            continue;
+        }
+        
+        const validation = validateProfileField(field, profileData[field]);
+        if (!validation.isValid) {
+            errors.push(`${field}: ${validation.error}`);
+        }
+    }
+    
+    // Опциональные поля (проверяем только если заполнены)
+    const optionalFields = ['achievements'];
+    
+    for (const field of optionalFields) {
+        if (profileData[field]) {
+            const validation = validateProfileField(field, profileData[field]);
+            if (!validation.isValid) {
+                errors.push(`${field}: ${validation.error}`);
+            }
+        }
+    }
+    
+    return {
+        canSave: errors.length === 0,
+        errors
+    };
+}
+
 module.exports = {
     validateProjectName,
     validateProjectDescription,
@@ -136,5 +263,9 @@ module.exports = {
     validateTelegramId,
     validateUsername,
     validateName,
-    validateProject
+    validateProject,
+    PROFILE_VALIDATION,
+    validateProfileField,
+    formatFieldCounter,
+    validateProfileData
 }; 

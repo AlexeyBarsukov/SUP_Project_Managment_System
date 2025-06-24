@@ -40,7 +40,11 @@ const {
     handleTextInput,
     handleFillAchievements,
     handleFillSalary,
-    handleFillContacts
+    handleFillContacts,
+    showEditProfileMenu,
+    showEditFieldList,
+    handleEditFieldInput,
+    handleEditFieldValue
 } = require('./bot/commands/profile');
 
 // Импорт команд просмотра менеджеров
@@ -137,7 +141,9 @@ bot.hears('🔍 Найти исполнителей', customerOnly, async (ctx) 
 });
 
 // Команды для менеджера
-bot.hears(['📝 Заполнить профиль', '✏️ Редактировать профиль'], managerOnly, handleProfileCommand);
+bot.hears(['📝 Заполнить профиль', '✏️ Редактировать профиль'], managerOnly, async (ctx) => {
+    await showEditProfileMenu(ctx);
+});
 bot.hears('🔍 Найти исполнителей', managerOnly, async (ctx) => {
     // TODO: Реализовать поиск исполнителей
     await ctx.reply('🔍 <b>Поиск исполнителей</b>\n\nФункция в разработке.', { parse_mode: 'HTML' });
@@ -264,6 +270,19 @@ bot.hears(['👤 Заказчик', '👨‍💼 Менеджер', '👷 Исп
             ctx.session.changingRole = false;
             return ctx.reply('❌ Пользователь не найден. Используйте /start для регистрации.');
         }
+        
+        // Логируем изменение роли
+        await AuditLog.create(
+            ctx.from.id,
+            'ROLE_CHANGE',
+            null,
+            { 
+                oldRole: ctx.user?.main_role || 'unknown', 
+                newRole: selectedRole,
+                username: user.username 
+            }
+        );
+        
         // Обновляем ctx.user для корректной работы профиля
         ctx.user = await User.findByTelegramId(ctx.from.id);
         const roleNames = {
@@ -333,6 +352,18 @@ bot.on('text', async (ctx, next) => {
             `[Чат проекта ${project.name}]\n${ctx.user.first_name || ''}: ${ctx.message.text}\n(Для ответа напишите #chat_${projectId} и текст)`
         );
         await ctx.reply('Сообщение отправлено.');
+        return;
+    }
+    
+    if (ctx.session?.editProfileMode === 'one_field' && !ctx.session.editProfileField) {
+        // Ожидаем номер поля
+        const user = await User.findByTelegramId(ctx.from.id);
+        return handleEditFieldInput(ctx, user);
+    }
+    if (ctx.session?.editProfileMode === 'one_field' && ctx.session.editProfileField) {
+        // Ожидаем новое значение
+        const user = await User.findByTelegramId(ctx.from.id);
+        await handleEditFieldValue(ctx, user);
         return;
     }
     
@@ -506,64 +537,240 @@ bot.action(/^accept_invite_(\d+)$/, async (ctx) => {
     if (!ctx.user) ctx.user = await User.findByTelegramId(ctx.from.id);
     const project = await Project.findById(projectId);
     if (!project) {
-        await ctx.reply('Этот проект больше не существует или был удалён заказчиком.');
-        return ctx.answerCbQuery();
+        await ctx.answerCbQuery('❌ Проект не найден или был удалён заказчиком.');
+        return;
     }
+    
     // Находим запись project_managers
     const pm = await ProjectManager.findByProjectAndManager(projectId, ctx.user.id);
     if (!pm) {
-        await ctx.reply('Приглашение не найдено или уже обработано.');
-        return ctx.answerCbQuery();
+        await ctx.answerCbQuery('❌ Приглашение не найдено или уже обработано.');
+        return;
     }
-    // 1. Обновляем статус менеджера
-    await ProjectManager.updateStatus(pm.id, 'accepted', pm.offer);
-    // 1.1. Добавляем менеджера в project_members
-    await Project.addMember(projectId, ctx.user.id, 'manager');
-    // 2. Меняем статус проекта
-    await Project.updateStatus(projectId, 'searching_executors');
-    // 3. Уведомляем заказчика
-    const customer = await User.findById(project.customer_id);
-    if (customer) {
-        await ctx.telegram.sendMessage(
-            customer.telegram_id,
-            `✅ Менеджер @${ctx.user.username || ''} принял ваш проект «${project.name}».`
+    
+    // Проверяем, что менеджер еще не принят
+    if (pm.status === 'accepted') {
+        await ctx.answerCbQuery('✅ Вы уже приняли это приглашение!');
+        return;
+    }
+    
+    // Проверяем, что менеджер не отказался
+    if (pm.status === 'declined') {
+        await ctx.answerCbQuery('❌ Вы уже отказались от этого приглашения.');
+        return;
+    }
+    
+    try {
+        // 1. Обновляем статус менеджера
+        await ProjectManager.updateStatus(pm.id, 'accepted', pm.offer);
+        
+        // 2. Добавляем менеджера в project_members (с проверкой на дубликаты)
+        const hasMember = await Project.hasMember(projectId, ctx.user.id, 'manager');
+        
+        if (!hasMember) {
+            await Project.addMember(projectId, ctx.user.id, 'manager');
+        }
+        
+        // 3. Меняем статус проекта
+        await Project.updateStatus(projectId, 'searching_executors');
+        
+        // 4. Уведомляем заказчика
+        const customer = await User.findById(project.customer_id);
+        if (customer) {
+            await ctx.telegram.sendMessage(
+                customer.telegram_id,
+                `✅ Менеджер @${ctx.user.username || ''} принял ваш проект «${project.name}».`
+            );
+        }
+        
+        // 5. Логируем событие
+        await AuditLog.create(
+            ctx.user.id,
+            'MANAGER_ACCEPTED',
+            projectId,
+            { managerUsername: ctx.user.username, projectName: project.name }
         );
+        
+        // 6. Обновляем карточку проекта
+        ctx.params = [projectId];
+        await projectDetails(ctx);
+        
+        await ctx.answerCbQuery('✅ Приглашение принято!');
+        
+    } catch (error) {
+        console.error('Error in accept_invite:', error);
+        await ctx.answerCbQuery('❌ Произошла ошибка при принятии приглашения.');
     }
-    // 4. Логируем событие
-    await AuditLog.create(
-        ctx.user.id,
-        'MANAGER_ACCEPTED',
-        projectId,
-        { managerUsername: ctx.user.username, projectName: project.name }
-    );
-    // 5. Обновляем карточку проекта
-    ctx.params = [projectId];
-    await projectDetails(ctx);
-    await ctx.answerCbQuery();
 });
 
 // Обработка отказа менеджера
 bot.action(/^decline_invite_(\d+)$/, async (ctx) => {
-    const projectId = ctx.match[1];
-    const project = await Project.findById(projectId);
-    if (!project) {
-        await ctx.reply('Этот проект больше не существует или был удалён заказчиком.');
-        return ctx.answerCbQuery();
+    try {
+        console.log('[decline_invite] Начало обработки отказа для проекта:', ctx.match[1]);
+        console.log('[decline_invite] Пользователь:', ctx.from?.id, ctx.from?.username);
+        
+        const projectId = ctx.match[1];
+        
+        // Получаем пользователя
+        if (!ctx.user) {
+            ctx.user = await User.findByTelegramId(ctx.from.id);
+            if (!ctx.user) {
+                await ctx.answerCbQuery('❌ Пользователь не найден. Используйте /start для регистрации.');
+                return;
+            }
+        }
+        
+        // Получаем проект
+        const project = await Project.findById(projectId);
+        if (!project) {
+            await ctx.answerCbQuery('❌ Проект не найден или был удалён заказчиком.');
+            return;
+        }
+        
+        console.log('[decline_invite] Проект найден:', project.name);
+        
+        // Проверяем, что пользователь не является заказчиком
+        if (project.customer_id === ctx.user.id) {
+            console.log('[decline_invite] Заказчик не может отказаться от своего проекта');
+            await ctx.answerCbQuery('❌ Заказчик не может отказаться от своего проекта.');
+            return;
+        }
+        
+        // Находим запись project_managers (приглашение)
+        const pm = await ProjectManager.findByProjectAndManager(projectId, ctx.user.id);
+        
+        // Проверяем, является ли пользователь участником проекта
+        const projectMember = await Project.hasMember(projectId, ctx.user.id);
+        
+        // Определяем тип отказа
+        let declineType = 'none';
+        let userRole = 'unknown';
+        
+        if (pm) {
+            // Пользователь имеет приглашение в project_managers
+            if (pm.status === 'declined') {
+                await ctx.answerCbQuery('❌ Вы уже отказались от этого приглашения.');
+                return;
+            }
+            
+            if (pm.status === 'pending') {
+                declineType = 'invitation';
+                userRole = 'manager';
+                console.log('[decline_invite] Отказ от приглашения (pending)');
+            } else if (pm.status === 'accepted') {
+                declineType = 'accepted_manager';
+                userRole = 'manager';
+                console.log('[decline_invite] Отказ принятого менеджера (accepted)');
+            }
+        } else if (projectMember) {
+            // Пользователь является участником проекта (но не в project_managers)
+            const members = await Project.getMembers(projectId);
+            const userMember = members.find(m => m.id === ctx.user.id);
+            if (userMember) {
+                declineType = 'project_member';
+                userRole = userMember.member_role;
+                console.log('[decline_invite] Отказ участника проекта:', userRole);
+            }
+        }
+        
+        if (declineType === 'none') {
+            console.log('[decline_invite] Пользователь не имеет доступа к проекту');
+            await ctx.answerCbQuery('❌ Вы не являетесь участником этого проекта.');
+            return;
+        }
+        
+        // Обрабатываем отказ в зависимости от типа
+        if (declineType === 'invitation') {
+            // Отказ от приглашения - обновляем статус на declined
+            console.log('[decline_invite] Обновляем статус приглашения на declined');
+            await ProjectManager.updateStatus(pm.id, 'declined');
+            
+        } else if (declineType === 'accepted_manager') {
+            // Отказ принятого менеджера - удаляем из project_members и project_managers
+            console.log('[decline_invite] Удаляем принятого менеджера');
+            await Project.removeMember(projectId, ctx.user.id);
+            await ProjectManager.deleteByProjectAndManager(projectId, ctx.user.id);
+            
+        } else if (declineType === 'project_member') {
+            // Отказ участника проекта - удаляем из project_members
+            console.log('[decline_invite] Удаляем участника проекта');
+            await Project.removeMember(projectId, ctx.user.id);
+        }
+        
+        // Проверяем, есть ли еще менеджеры в проекте
+        const remainingManagers = await ProjectManager.findByProject(projectId);
+        const acceptedManagers = remainingManagers.filter(m => m.status === 'accepted');
+        
+        console.log('[decline_invite] Оставшиеся менеджеры:', acceptedManagers.length);
+        
+        // Если нет принятых менеджеров, возвращаем проект к заказчику
+        if (acceptedManagers.length === 0) {
+            console.log('[decline_invite] Нет менеджеров, возвращаем проект заказчику');
+            
+            // Добавляем заказчика как менеджера
+            await Project.addMember(projectId, project.customer_id, 'manager');
+            await ProjectManager.create({ 
+                project_id: projectId, 
+                manager_id: project.customer_id, 
+                status: 'accepted' 
+            });
+            
+            // Меняем статус проекта на 'searching_executors'
+            await Project.updateStatus(projectId, 'searching_executors');
+        }
+        
+        // Уведомляем заказчика
+        const customer = await User.findById(project.customer_id);
+        if (customer) {
+            let message;
+            if (declineType === 'invitation') {
+                message = `❌ Менеджер @${ctx.user.username || 'пользователь'} отказался от приглашения в проект «${project.name}».`;
+            } else {
+                const roleText = userRole === 'manager' ? 'менеджер' : 'исполнитель';
+                message = `❌ ${roleText.charAt(0).toUpperCase() + roleText.slice(1)} @${ctx.user.username || 'пользователь'} отказался от участия в проекте «${project.name}».`;
+            }
+            
+            console.log('[decline_invite] Отправляем уведомление заказчику:', customer.telegram_id);
+            await ctx.telegram.sendMessage(customer.telegram_id, message);
+        }
+        
+        // Логируем событие
+        await AuditLog.create(
+            ctx.user.id,
+            'PROJECT_DECLINED',
+            projectId,
+            { 
+                username: ctx.user.username, 
+                projectName: project.name,
+                role: userRole,
+                declineType: declineType
+            }
+        );
+        
+        console.log('[decline_invite] Отказ обработан успешно');
+        
+        // Отвечаем пользователю в зависимости от типа отказа
+        let responseMessage;
+        if (declineType === 'invitation') {
+            responseMessage = '❌ Вы отказались от приглашения.';
+        } else {
+            responseMessage = '❌ Вы отказались от участия в проекте.';
+        }
+        
+        await ctx.answerCbQuery(responseMessage);
+        
+        // Обновляем карточку проекта (если это возможно)
+        try {
+            ctx.params = [projectId];
+            await projectDetails(ctx);
+        } catch (error) {
+            console.log('[decline_invite] Ошибка при обновлении карточки проекта:', error.message);
+        }
+        
+    } catch (error) {
+        console.error('[decline_invite] Ошибка при обработке отказа:', error);
+        await ctx.answerCbQuery('❌ Произошла ошибка при отказе от проекта.');
     }
-    const managerTelegramId = ctx.from.id;
-    const invitation = await ManagerInvitation.findPending(managerTelegramId, projectId);
-    if (!invitation) {
-        await ctx.reply('Приглашение не найдено или уже обработано.');
-        return ctx.answerCbQuery();
-    }
-    await ManagerInvitation.updateStatus(invitation.id, 'declined');
-    await ctx.reply('Вы отказались от приглашения.');
-    // Уведомляем заказчика
-    await ctx.telegram.sendMessage(
-        invitation.customer_telegram_id,
-        `Менеджер @${ctx.from.username || ''} отказался от приглашения в проект.`
-    );
-    await ctx.answerCbQuery();
 });
 
 // Обработка подробного просмотра проекта
@@ -683,8 +890,28 @@ bot.action(/^assign_manager_(\d+)$/, async (ctx) => {
         let desc = [];
         if (m.specialization) desc.push(m.specialization);
         if (m.experience) desc.push(m.experience);
+        if (m.skills) {
+            let skills = m.skills;
+            if (typeof skills === 'string') {
+                try {
+                    const arr = JSON.parse(skills);
+                    if (Array.isArray(arr)) skills = arr.join(', ');
+                } catch { /* ignore */ }
+            }
+            desc.push(`Навыки: ${skills}`);
+        }
         list += `• @${m.username} — ${m.first_name || ''} ${m.last_name || ''}`;
         if (desc.length) list += `\n   ${desc.join(' | ')}`;
+        
+        // Добавляем зарплату и контакты
+        let additionalInfo = [];
+        if (m.salary_range) additionalInfo.push(`💸 Зарплата: ${m.salary_range}`);
+        if (m.contacts) additionalInfo.push(`📞 Контакты: ${m.contacts}`);
+        
+        if (additionalInfo.length > 0) {
+            list += `\n   ${additionalInfo.join(' | ')}`;
+        }
+        
         list += '\n';
     }
     
@@ -709,41 +936,70 @@ bot.action(/^select_manager_(\d+)_(\d+)$/, async (ctx) => {
     
     const project = await Project.findById(projectId);
     const manager = await User.findById(managerId);
-    if (!project || !manager) return ctx.reply('Проект или менеджер не найден.');
+    if (!project || !manager) {
+        await ctx.reply('❌ Проект или менеджер не найден.');
+        return ctx.answerCbQuery();
+    }
     
     // Проверяем права доступа
     if (project.customer_id !== ctx.user.id) {
-        return ctx.reply('❌ У вас нет прав для управления этим проектом.');
+        await ctx.reply('❌ У вас нет прав для управления этим проектом.');
+        return ctx.answerCbQuery();
     }
     
-    // Удаляем заказчика из роли менеджера
-    await ProjectManager.deleteByProjectAndManager(projectId, ctx.user.id);
-    await Project.removeUserFromProjectRoles(ctx.user.id, projectId, 'manager');
+    // Проверяем, что выбранный пользователь все еще является менеджером
+    if (manager.main_role !== 'manager') {
+        await ctx.reply(
+            `⚠️ Пользователь @${manager.username} больше не является менеджером.\n\n` +
+            `Выберите другого кандидата из списка.`
+        );
+        return ctx.answerCbQuery();
+    }
     
-    // Добавляем нового менеджера
-    await Project.addUserToProjectRoles(managerId, projectId, 'manager');
-    await ProjectManager.create({ project_id: projectId, manager_id: managerId, status: 'pending' });
+    // Проверяем, что менеджер все еще видимый
+    if (!manager.is_visible) {
+        await ctx.reply(
+            `⚠️ Пользователь @${manager.username} больше не доступен для назначения.\n\n` +
+            `Выберите другого кандидата из списка.`
+        );
+        return ctx.answerCbQuery();
+    }
     
-    // Отправляем уведомление менеджеру
-    await ctx.telegram.sendMessage(
-        manager.telegram_id,
-        `Вас назначили менеджером проекта "${project.name}" от ${ctx.user.first_name} ${ctx.user.last_name || ''}`,
-        {
-            reply_markup: {
-                inline_keyboard: [
-                    [
-                        { text: '📋 Подробнее о проекте и условиях', callback_data: `project_preview_${project.id}` }
-                    ],
-                    [
-                        { text: '✅ Согласиться', callback_data: `accept_invite_${project.id}` },
-                        { text: '❌ Отказаться', callback_data: `decline_invite_${project.id}` }
+    try {
+        // Удаляем заказчика из роли менеджера
+        await ProjectManager.deleteByProjectAndManager(projectId, ctx.user.id);
+        await Project.removeUserFromProjectRoles(ctx.user.id, projectId, 'manager');
+        
+        // Добавляем нового менеджера
+        await Project.addUserToProjectRoles(managerId, projectId, 'manager');
+        await ProjectManager.create({ project_id: projectId, manager_id: managerId, status: 'pending' });
+        
+        // Отправляем уведомление менеджеру
+        await ctx.telegram.sendMessage(
+            manager.telegram_id,
+            `Вас назначили менеджером проекта "${project.name}" от ${ctx.user.first_name} ${ctx.user.last_name || ''}`,
+            {
+                reply_markup: {
+                    inline_keyboard: [
+                        [
+                            { text: '📋 Подробнее о проекте и условиях', callback_data: `project_preview_${project.id}` }
+                        ],
+                        [
+                            { text: '✅ Согласиться', callback_data: `accept_invite_${project.id}` },
+                            { text: '❌ Отказаться', callback_data: `decline_invite_${project.id}` }
+                        ]
                     ]
-                ]
+                }
             }
-        }
-    );
+        );
+        
+        await ctx.reply(`✅ Менеджер @${manager.username} назначен и уведомлен!`);
+        
+    } catch (error) {
+        console.error('Error in select_manager:', error);
+        await ctx.reply('❌ Произошла ошибка при назначении менеджера. Попробуйте еще раз.');
+    }
     
-    await ctx.reply(`✅ Менеджер @${manager.username} назначен и уведомлен!`);
     await ctx.answerCbQuery();
 });
 
@@ -888,8 +1144,28 @@ bot.action(/^add_manager_(\d+)$/, async (ctx) => {
         let desc = [];
         if (m.specialization) desc.push(m.specialization);
         if (m.experience) desc.push(m.experience);
+        if (m.skills) {
+            let skills = m.skills;
+            if (typeof skills === 'string') {
+                try {
+                    const arr = JSON.parse(skills);
+                    if (Array.isArray(arr)) skills = arr.join(', ');
+                } catch { /* ignore */ }
+            }
+            desc.push(`Навыки: ${skills}`);
+        }
         list += `• @${m.username} — ${m.first_name || ''} ${m.last_name || ''}`;
         if (desc.length) list += `\n   ${desc.join(' | ')}`;
+        
+        // Добавляем зарплату и контакты
+        let additionalInfo = [];
+        if (m.salary_range) additionalInfo.push(`💸 Зарплата: ${m.salary_range}`);
+        if (m.contacts) additionalInfo.push(`📞 Контакты: ${m.contacts}`);
+        
+        if (additionalInfo.length > 0) {
+            list += `\n   ${additionalInfo.join(' | ')}`;
+        }
+        
         list += '\n';
     }
     
@@ -914,11 +1190,33 @@ bot.action(/^add_manager_select_(\d+)_(\d+)$/, async (ctx) => {
     
     const project = await Project.findById(projectId);
     const manager = await User.findById(managerId);
-    if (!project || !manager) return ctx.reply('Проект или менеджер не найден.');
+    if (!project || !manager) {
+        await ctx.reply('❌ Проект или менеджер не найден.');
+        return ctx.answerCbQuery();
+    }
     
     // Проверяем права доступа
     if (project.customer_id !== ctx.user.id) {
-        return ctx.reply('❌ У вас нет прав для управления этим проектом.');
+        await ctx.reply('❌ У вас нет прав для управления этим проектом.');
+        return ctx.answerCbQuery();
+    }
+    
+    // Проверяем, что выбранный пользователь все еще является менеджером
+    if (manager.main_role !== 'manager') {
+        await ctx.reply(
+            `⚠️ Пользователь @${manager.username} больше не является менеджером.\n\n` +
+            `Выберите другого кандидата из списка.`
+        );
+        return ctx.answerCbQuery();
+    }
+    
+    // Проверяем, что менеджер все еще видимый
+    if (!manager.is_visible) {
+        await ctx.reply(
+            `⚠️ Пользователь @${manager.username} больше не доступен для назначения.\n\n` +
+            `Выберите другого кандидата из списка.`
+        );
+        return ctx.answerCbQuery();
     }
     
     // Проверяем лимит менеджеров (максимум 3)
@@ -930,30 +1228,37 @@ bot.action(/^add_manager_select_(\d+)_(\d+)$/, async (ctx) => {
         return ctx.answerCbQuery();
     }
     
-    // Добавляем менеджера
-    await Project.addUserToProjectRoles(managerId, projectId, 'manager');
-    await ProjectManager.create({ project_id: projectId, manager_id: managerId, status: 'pending' });
-    
-    // Отправляем уведомление менеджеру
-    await ctx.telegram.sendMessage(
-        manager.telegram_id,
-        `Вас пригласили как дополнительного менеджера в проект "${project.name}" от ${ctx.user.first_name} ${ctx.user.last_name || ''}`,
-        {
-            reply_markup: {
-                inline_keyboard: [
-                    [
-                        { text: '📋 Подробнее о проекте и условиях', callback_data: `project_preview_${project.id}` }
-                    ],
-                    [
-                        { text: '✅ Согласиться', callback_data: `accept_invite_${project.id}` },
-                        { text: '❌ Отказаться', callback_data: `decline_invite_${project.id}` }
+    try {
+        // Добавляем менеджера
+        await Project.addUserToProjectRoles(managerId, projectId, 'manager');
+        await ProjectManager.create({ project_id: projectId, manager_id: managerId, status: 'pending' });
+        
+        // Отправляем уведомление менеджеру
+        await ctx.telegram.sendMessage(
+            manager.telegram_id,
+            `Вас пригласили как дополнительного менеджера в проект "${project.name}" от ${ctx.user.first_name} ${ctx.user.last_name || ''}`,
+            {
+                reply_markup: {
+                    inline_keyboard: [
+                        [
+                            { text: '📋 Подробнее о проекте и условиях', callback_data: `project_preview_${project.id}` }
+                        ],
+                        [
+                            { text: '✅ Согласиться', callback_data: `accept_invite_${project.id}` },
+                            { text: '❌ Отказаться', callback_data: `decline_invite_${project.id}` }
+                        ]
                     ]
-                ]
+                }
             }
-        }
-    );
+        );
+        
+        await ctx.reply(`✅ Дополнительный менеджер @${manager.username} приглашен!`);
+        
+    } catch (error) {
+        console.error('Error in add_manager_select:', error);
+        await ctx.reply('❌ Произошла ошибка при добавлении менеджера. Попробуйте еще раз.');
+    }
     
-    await ctx.reply(`✅ Дополнительный менеджер @${manager.username} приглашен!`);
     await ctx.answerCbQuery();
 });
 
@@ -1090,8 +1395,28 @@ bot.action(/^change_manager_select_(\d+)_(\d+)$/, async (ctx) => {
         let desc = [];
         if (m.specialization) desc.push(m.specialization);
         if (m.experience) desc.push(m.experience);
+        if (m.skills) {
+            let skills = m.skills;
+            if (typeof skills === 'string') {
+                try {
+                    const arr = JSON.parse(skills);
+                    if (Array.isArray(arr)) skills = arr.join(', ');
+                } catch { /* ignore */ }
+            }
+            desc.push(`Навыки: ${skills}`);
+        }
         list += `• @${m.username} — ${m.first_name || ''} ${m.last_name || ''}`;
         if (desc.length) list += `\n   ${desc.join(' | ')}`;
+        
+        // Добавляем зарплату и контакты
+        let additionalInfo = [];
+        if (m.salary_range) additionalInfo.push(`💸 Зарплата: ${m.salary_range}`);
+        if (m.contacts) additionalInfo.push(`📞 Контакты: ${m.contacts}`);
+        
+        if (additionalInfo.length > 0) {
+            list += `\n   ${additionalInfo.join(' | ')}`;
+        }
+        
         list += '\n';
     }
     
@@ -1118,47 +1443,76 @@ bot.action(/^change_manager_confirm_(\d+)_(\d+)_(\d+)$/, async (ctx) => {
     const project = await Project.findById(projectId);
     const oldManager = await User.findById(oldManagerId);
     const newManager = await User.findById(newManagerId);
-    if (!project || !oldManager || !newManager) return ctx.reply('Проект или менеджер не найден.');
+    if (!project || !oldManager || !newManager) {
+        await ctx.reply('❌ Проект или менеджер не найден.');
+        return ctx.answerCbQuery();
+    }
     
     // Проверяем права доступа
     if (project.customer_id !== ctx.user.id) {
-        return ctx.reply('❌ У вас нет прав для управления этим проектом.');
+        await ctx.reply('❌ У вас нет прав для управления этим проектом.');
+        return ctx.answerCbQuery();
     }
     
-    // Удаляем старого менеджера
-    await ProjectManager.deleteByProjectAndManager(projectId, oldManagerId);
-    await Project.removeUserFromProjectRoles(oldManagerId, projectId, 'manager');
+    // Проверяем, что новый менеджер все еще является менеджером
+    if (newManager.main_role !== 'manager') {
+        await ctx.reply(
+            `⚠️ Пользователь @${newManager.username} больше не является менеджером.\n\n` +
+            `Выберите другого кандидата из списка.`
+        );
+        return ctx.answerCbQuery();
+    }
     
-    // Добавляем нового менеджера
-    await Project.addUserToProjectRoles(newManagerId, projectId, 'manager');
-    await ProjectManager.create({ project_id: projectId, manager_id: newManagerId, status: 'pending' });
+    // Проверяем, что новый менеджер все еще видимый
+    if (!newManager.is_visible) {
+        await ctx.reply(
+            `⚠️ Пользователь @${newManager.username} больше не доступен для назначения.\n\n` +
+            `Выберите другого кандидата из списка.`
+        );
+        return ctx.answerCbQuery();
+    }
     
-    // Уведомляем старого менеджера
-    await ctx.telegram.sendMessage(
-        oldManager.telegram_id,
-        `Вас заменили на менеджера в проекте "${project.name}"`
-    );
-    
-    // Отправляем уведомление новому менеджеру
-    await ctx.telegram.sendMessage(
-        newManager.telegram_id,
-        `Вас назначили менеджером проекта "${project.name}" от ${ctx.user.first_name} ${ctx.user.last_name || ''}`,
-        {
-            reply_markup: {
-                inline_keyboard: [
-                    [
-                        { text: '📋 Подробнее о проекте и условиях', callback_data: `project_preview_${project.id}` }
-                    ],
-                    [
-                        { text: '✅ Согласиться', callback_data: `accept_invite_${project.id}` },
-                        { text: '❌ Отказаться', callback_data: `decline_invite_${project.id}` }
+    try {
+        // Удаляем старого менеджера
+        await ProjectManager.deleteByProjectAndManager(projectId, oldManagerId);
+        await Project.removeUserFromProjectRoles(oldManagerId, projectId, 'manager');
+        
+        // Добавляем нового менеджера
+        await Project.addUserToProjectRoles(newManagerId, projectId, 'manager');
+        await ProjectManager.create({ project_id: projectId, manager_id: newManagerId, status: 'pending' });
+        
+        // Уведомляем старого менеджера
+        await ctx.telegram.sendMessage(
+            oldManager.telegram_id,
+            `Вас заменили на менеджера в проекте "${project.name}"`
+        );
+        
+        // Отправляем уведомление новому менеджеру
+        await ctx.telegram.sendMessage(
+            newManager.telegram_id,
+            `Вас назначили менеджером проекта "${project.name}" от ${ctx.user.first_name} ${ctx.user.last_name || ''}`,
+            {
+                reply_markup: {
+                    inline_keyboard: [
+                        [
+                            { text: '📋 Подробнее о проекте и условиях', callback_data: `project_preview_${project.id}` }
+                        ],
+                        [
+                            { text: '✅ Согласиться', callback_data: `accept_invite_${project.id}` },
+                            { text: '❌ Отказаться', callback_data: `decline_invite_${project.id}` }
+                        ]
                     ]
-                ]
+                }
             }
-        }
-    );
+        );
+        
+        await ctx.reply(`✅ Менеджер @${oldManager.username} заменен на @${newManager.username}!`);
+        
+    } catch (error) {
+        console.error('Error in change_manager_confirm:', error);
+        await ctx.reply('❌ Произошла ошибка при смене менеджера. Попробуйте еще раз.');
+    }
     
-    await ctx.reply(`✅ Менеджер @${oldManager.username} заменен на @${newManager.username}!`);
     await ctx.answerCbQuery();
 });
 
@@ -1551,7 +1905,7 @@ bot.on('message', async (ctx, next) => {
     if (ctx.message.handled) return next();
     
     if (ctx.message.text && !ctx.message.text.startsWith('/')) {
-        await ctx.reply('❓ Неизвестная команда...');
+        await ctx.reply('❓ Неизвестная команда, нажмите /start и вернитесь в исходное состояние');
     }
     return next();
 });
@@ -1736,6 +2090,166 @@ bot.action(/^project_preview_(\d+)$/, async (ctx) => {
         await ctx.reply('❌ Произошла ошибка при загрузке информации о проекте.');
     }
     
+    await ctx.answerCbQuery();
+});
+
+// Обработка выхода менеджера из проекта
+bot.action(/^leave_project_(\d+)$/, async (ctx) => {
+    const projectId = ctx.match[1];
+    if (!ctx.user) ctx.user = await User.findByTelegramId(ctx.from.id);
+    const project = await Project.findById(projectId);
+    if (!project) {
+        await ctx.answerCbQuery('❌ Проект не найден или был удалён.');
+        return;
+    }
+    
+    // Проверяем, что пользователь является принятым менеджером проекта
+    const pm = await ProjectManager.findByProjectAndManager(projectId, ctx.user.id);
+    if (!pm || pm.status !== 'accepted') {
+        await ctx.answerCbQuery('❌ У вас нет прав для выхода из этого проекта.');
+        return;
+    }
+    
+    // Проверяем ограничения
+    if (project.status === 'completed' || project.status === 'archived') {
+        await ctx.answerCbQuery('❌ Нельзя покинуть завершенный или архивный проект.');
+        return;
+    }
+    
+    // Проверяем, что менеджер не является последним исполнителем
+    const members = await Project.getMembers(projectId);
+    const executors = members.filter(m => m.member_role === 'executor');
+    const managers = members.filter(m => m.member_role === 'manager');
+    
+    // Если менеджер является единственным участником проекта (кроме заказчика)
+    if (managers.length === 1 && executors.length === 0) {
+        await ctx.answerCbQuery('❌ Нельзя покинуть проект, если вы являетесь единственным участником.');
+        return;
+    }
+    
+    // Показываем диалог подтверждения
+    await ctx.reply(
+        `🚪 <b>Подтверждение выхода из проекта</b>\n\n` +
+        `Вы уверены, что хотите покинуть проект "${project.name}"?\n\n` +
+        `⚠️ <b>Внимание!</b> После выхода:\n` +
+        `• Вы будете удалены из списка участников проекта\n` +
+        `• Заказчик будет уведомлен о вашем выходе\n` +
+        `• Если вы были единственным менеджером, заказчик станет менеджером\n` +
+        `• Проект может вернуться к статусу "Активный"\n\n` +
+        `Это действие можно отменить только повторным приглашением от заказчика.`,
+        {
+            parse_mode: 'HTML',
+            reply_markup: {
+                inline_keyboard: [
+                    [
+                        { text: '✅ Да, покинуть', callback_data: `confirm_leave_project_${projectId}` },
+                        { text: '❌ Отмена', callback_data: `cancel_leave_project_${projectId}` }
+                    ]
+                ]
+            }
+        }
+    );
+    
+    await ctx.answerCbQuery();
+});
+
+// Обработка подтверждения выхода из проекта
+bot.action(/^confirm_leave_project_(\d+)$/, async (ctx) => {
+    const projectId = ctx.match[1];
+    if (!ctx.user) ctx.user = await User.findByTelegramId(ctx.from.id);
+    const project = await Project.findById(projectId);
+    if (!project) {
+        await ctx.answerCbQuery('❌ Проект не найден или был удалён.');
+        return;
+    }
+    
+    // Проверяем, что пользователь является принятым менеджером проекта
+    const pm = await ProjectManager.findByProjectAndManager(projectId, ctx.user.id);
+    if (!pm || pm.status !== 'accepted') {
+        await ctx.answerCbQuery('❌ У вас нет прав для выхода из этого проекта.');
+        return;
+    }
+    
+    try {
+        // 1. Удаляем менеджера из project_managers
+        await ProjectManager.deleteById(pm.id);
+        
+        // 2. Удаляем менеджера из project_members
+        await Project.removeMember(projectId, ctx.user.id);
+        
+        // 3. Проверяем, есть ли еще принятые менеджеры
+        const allManagers = await ProjectManager.findByProject(projectId);
+        const acceptedManagers = allManagers.filter(m => m.status === 'accepted');
+        
+        // 4. Если нет принятых менеджеров, назначаем заказчика
+        if (acceptedManagers.length === 0) {
+            // Добавляем заказчика как менеджера
+            await Project.addMember(projectId, project.customer_id, 'manager');
+            await ProjectManager.create({ 
+                project_id: projectId, 
+                manager_id: project.customer_id, 
+                status: 'accepted' 
+            });
+            
+            // Меняем статус проекта на 'active' если он был 'in_progress'
+            if (project.status === 'in_progress') {
+                await Project.updateStatus(projectId, 'active');
+            }
+        }
+        
+        // 5. Уведомляем заказчика
+        const customer = await User.findById(project.customer_id);
+        if (customer) {
+            await ctx.telegram.sendMessage(
+                customer.telegram_id,
+                `🔔 Менеджер @${ctx.user.username || ''} покинул ваш проект «${project.name}».`
+            );
+        }
+        
+        // 6. Логируем событие
+        await AuditLog.create(
+            ctx.user.id,
+            'MANAGER_LEFT_PROJECT',
+            projectId,
+            { managerUsername: ctx.user.username, projectName: project.name }
+        );
+        
+        // 7. Обновляем карточку проекта
+        ctx.params = [projectId];
+        await projectDetails(ctx);
+        
+        await ctx.answerCbQuery('✅ Вы успешно покинули проект!');
+        
+    } catch (error) {
+        console.error('Error in confirm_leave_project:', error);
+        await ctx.answerCbQuery('❌ Произошла ошибка при выходе из проекта.');
+    }
+});
+
+// Обработка отмены выхода из проекта
+bot.action(/^cancel_leave_project_(\d+)$/, async (ctx) => {
+    const projectId = ctx.match[1];
+    if (!ctx.user) ctx.user = await User.findByTelegramId(ctx.from.id);
+    
+    // Просто обновляем карточку проекта
+    ctx.params = [projectId];
+    await projectDetails(ctx);
+    
+    await ctx.answerCbQuery('❌ Выход из проекта отменен.');
+});
+
+// Обработка callback-кнопок меню редактирования профиля
+bot.action('edit_one_field', async (ctx) => {
+    const user = await User.findByTelegramId(ctx.from.id);
+    await showEditFieldList(ctx, user);
+    await ctx.answerCbQuery();
+});
+bot.action('edit_full_profile', async (ctx) => {
+    await handleProfileCommand(ctx); // старый flow
+    await ctx.answerCbQuery();
+});
+bot.action('edit_cancel', async (ctx) => {
+    await ctx.reply('Редактирование профиля отменено.');
     await ctx.answerCbQuery();
 });
 

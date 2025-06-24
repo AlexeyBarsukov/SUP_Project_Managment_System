@@ -345,14 +345,32 @@ const projectDetails = async (ctx) => {
         }
         if (isFilled(project.deadline)) message += `⏰ <b>Сроки:</b> ${project.deadline}\n`;
         if (isFilled(project.budget)) message += `💰 <b>Бюджет:</b> ${project.budget}\n`;
-        message += `📋 <b>Требования к менеджеру:</b> ${project.manager_requirements || "не указаны"}\n`;
-        message += `⚙️ <b>Условия работы:</b> ${project.work_conditions || "не указаны"}\n`;
-        message += `📝 <b>Доп. пожелания:</b> ${project.additional_notes || "нет"}\n`;
+        
+        // Добавляем требования к менеджеру
+        if (project.manager_requirements) {
+            message += `📋 <b>Требования к менеджеру:</b>\n${project.manager_requirements}\n`;
+        } else {
+            message += `📋 <b>Требования к менеджеру:</b> не указаны\n`;
+        }
+        
+        // Добавляем условия работы
+        if (project.work_conditions) {
+            message += `⚙️ <b>Условия работы:</b>\n${project.work_conditions}\n`;
+        } else {
+            message += `⚙️ <b>Условия работы:</b> не указаны\n`;
+        }
+        
+        // Добавляем дополнительные пожелания
+        if (project.additional_notes) {
+            message += `💡 <b>Дополнительные пожелания:</b>\n${project.additional_notes}\n`;
+        } else {
+            message += `💡 <b>Дополнительные пожелания:</b> нет\n`;
+        }
         // --- конец блока ---
 
         // Показываем исполнителей
-        const members = await Project.getMembers(project.id);
-        let executors = members.filter(m => m.member_role === 'executor');
+        const projectMembers = await Project.getMembers(project.id);
+        let executors = projectMembers.filter(m => m.member_role === 'executor');
         if (executors.length > 0) {
             message += '👥 <b>Исполнители:</b>\n';
             for (const member of executors) {
@@ -477,6 +495,62 @@ const projectDetails = async (ctx) => {
             });
             return;
         }
+        
+        // --- Действия для принятого менеджера ---
+        if (
+            acceptedManagers.length > 0 &&
+            acceptedManagers.some(m => m.manager_id === ctx.user.id)
+        ) {
+            // Проверяем ограничения
+            const canLeave = project.status !== 'completed' && project.status !== 'archived';
+            
+            let managerButtons = [];
+            
+            if (canLeave) {
+                managerButtons.push([
+                    { text: '🚪 Покинуть проект', callback_data: `leave_project_${project.id}` }
+                ]);
+            }
+            
+            // Если есть кнопки, показываем их
+            if (managerButtons.length > 0) {
+                await ctx.reply(message, {
+                    parse_mode: 'HTML',
+                    reply_markup: {
+                        inline_keyboard: managerButtons
+                    }
+                });
+                return;
+            }
+        }
+        
+        // --- Действия для участников проекта (менеджеров и исполнителей) ---
+        const userMember = projectMembers.find(m => m.id === ctx.user.id);
+        
+        if (userMember && userMember.member_role !== 'customer') {
+            // Проверяем, что пользователь не является заказчиком
+            if (project.customer_id !== ctx.user.id) {
+                // Проверяем ограничения для отказа
+                const canDecline = project.status !== 'completed' && project.status !== 'archived';
+                
+                if (canDecline) {
+                    const roleText = userMember.member_role === 'manager' ? 'менеджера' : 'исполнителя';
+                    
+                    await ctx.reply(message, {
+                        parse_mode: 'HTML',
+                        reply_markup: {
+                            inline_keyboard: [
+                                [
+                                    { text: `❌ Отказаться от участия`, callback_data: `decline_invite_${project.id}` }
+                                ]
+                            ]
+                        }
+                    });
+                    return;
+                }
+            }
+        }
+        
         // --- Для всех остальных ---
         await ctx.reply(message, { parse_mode: 'HTML' });
         return;
@@ -623,6 +697,16 @@ const handleCreateProjectStep = async (ctx) => {
                         if (m.achievements) desc.push(`Достижения: ${m.achievements}`);
                         list += `• @${m.username} — ${m.first_name || ''} ${m.last_name || ''}`;
                         if (desc.length) list += `\n   ${desc.join(' | ')}`;
+                        
+                        // Добавляем зарплату и контакты
+                        let additionalInfo = [];
+                        if (m.salary_range) additionalInfo.push(`💸 Зарплата: ${m.salary_range}`);
+                        if (m.contacts) additionalInfo.push(`📞 Контакты: ${m.contacts}`);
+                        
+                        if (additionalInfo.length > 0) {
+                            list += `\n   ${additionalInfo.join(' | ')}`;
+                        }
+                        
                         list += '\n';
                     }
                     if (managers.length === 0) {
@@ -761,6 +845,9 @@ async function processUsers(usernames, role, projectId, ctx) {
 // TODO: Обернуть saveProject в транзакцию для атомарности операций создания проекта и ролей
 async function saveProject(ctx) {
     try {
+        console.log('[saveProject] Начало создания проекта для пользователя:', ctx.from?.id);
+        console.log('[saveProject] Данные проекта:', JSON.stringify(ctx.session?.createProject?.data, null, 2));
+        
         // Гарантированно получаем пользователя
         if (!ctx.user) {
             ctx.user = await User.findByTelegramId(ctx.from.id);
@@ -768,15 +855,20 @@ async function saveProject(ctx) {
                 throw new Error(`Пользователь ${ctx.from.id} не найден в базе`);
             }
         }
+        
         const d = ctx.session.createProject.data;
         const userId = ctx.user.id || ctx.user.telegram_id || ctx.from.id;
         if (!userId) {
             throw new Error('Не удалось определить ID пользователя');
         }
+        
+        console.log('[saveProject] ID пользователя:', userId);
+        
         if (d.executors && d.executors.length > 10) {
             await ctx.reply('❌ Максимум 10 исполнителей.');
             return;
         }
+        
         // Определяем статус проекта
         let projectStatus = 'draft';
         if (!d.manager) {
@@ -784,6 +876,9 @@ async function saveProject(ctx) {
         } else {
             projectStatus = 'searching_manager'; // Ждём согласия менеджера
         }
+        
+        console.log('[saveProject] Создаем проект со статусом:', projectStatus);
+        
         // Создаем проект
         const project = await Project.create(
             d.projectName,
@@ -798,30 +893,45 @@ async function saveProject(ctx) {
                 additional_notes: d.additional_notes
             }
         );
+        
         if (!project) throw new Error('Не удалось создать проект');
+        
+        console.log('[saveProject] Проект создан с ID:', project.id);
+        
         // Добавляем роли
+        console.log('[saveProject] Добавляем роль customer для пользователя:', userId);
         await Project.addUserToProjectRoles(userId, project.id, 'customer');
+        
         // Если менеджер не выбран — заказчик сразу становится менеджером
         if (!d.manager) {
+            console.log('[saveProject] Менеджер не выбран, заказчик становится менеджером');
             await Project.addUserToProjectRoles(userId, project.id, 'manager');
             await ProjectManager.create({ project_id: project.id, manager_id: userId, status: 'accepted' });
         }
+        
         // Обработка исполнителей
         if (d.executors?.length > 0) {
+            console.log('[saveProject] Обрабатываем исполнителей:', d.executors);
             await processUsers(d.executors, 'executor', project.id, ctx);
         }
+        
         // Обработка менеджера
         if (d.manager) {
+            console.log('[saveProject] Обрабатываем менеджера:', d.manager);
             const managerUser = await User.findByUsername(d.manager.replace('@', ''));
             if (managerUser) {
+                console.log('[saveProject] Найден менеджер:', managerUser.id);
+                
                 if (d.selfManager) {
                     // Если заказчик выбрал себя как менеджера — сразу назначаем accepted и статус 'searching_executors'
+                    console.log('[saveProject] Заказчик выбрал себя как менеджера');
                     await Project.addUserToProjectRoles(managerUser.id, project.id, 'manager');
                     await ProjectManager.create({ project_id: project.id, manager_id: managerUser.id, status: 'accepted' });
                     await Project.updateStatus(project.id, 'searching_executors');
                     await Project.addMember(project.id, ctx.user.id, 'manager');
                 } else {
                     // Создаём приглашение
+                    console.log('[saveProject] Создаем приглашение для менеджера');
                     await ManagerInvitation.create({
                         project_id: project.id,
                         manager_telegram_id: managerUser.telegram_id,
@@ -829,10 +939,12 @@ async function saveProject(ctx) {
                     });
                     // ВАЖНО: создаём запись в project_managers со статусом pending
                     await ProjectManager.create({ project_id: project.id, manager_id: managerUser.id, status: 'pending' });
+                    
                     // Отправляем уведомление менеджеру
+                    console.log('[saveProject] Отправляем уведомление менеджеру:', managerUser.telegram_id);
                     await ctx.telegram.sendMessage(
                         managerUser.telegram_id,
-                        `Вас пригласили в проект "${project.name}" от ${ctx.user.first_name} ${ctx.user.last_name || ''}\n\nБолее подробно о проекте можно посмотреть в разделе "Доступные проекты"`,
+                        `Вас пригласили в проект "${project.name}" от ${ctx.user.first_name} ${ctx.user.last_name || ''}\n\nБолее подробно о проекте можно посмотреть в разделе "Подробнее о проекте и условиях"`,
                         {
                             reply_markup: {
                                 inline_keyboard: [
@@ -848,13 +960,20 @@ async function saveProject(ctx) {
                         }
                     );
                 }
+            } else {
+                console.log('[saveProject] Менеджер не найден:', d.manager);
             }
         }
+        
         // Логирование и уведомления
+        console.log('[saveProject] Логируем создание проекта');
         await AuditLog.logProjectCreated(userId, project.id, project.name);
         await notifyProjectCreated(ctx, project, ctx.user);
+        
         // Очистка и ответ
         delete ctx.session.createProject;
+        console.log('[saveProject] Проект успешно создан, отправляем ответ пользователю');
+        
         await ctx.reply(
             `✅ <b>Проект создан!</b>\n\n` +
             `Название: ${project.name}\n` +
@@ -864,13 +983,31 @@ async function saveProject(ctx) {
                 reply_markup: getKeyboardByRole(ctx.user.main_role).reply_markup
             }
         );
+        
+        console.log('[saveProject] Ответ отправлен успешно');
+        
     } catch (error) {
         console.error('SaveProject error:', {
             error: error.message,
+            stack: error.stack,
             userId: ctx.from?.id,
             session: ctx.session?.createProject
         });
-        await ctx.reply('❌ Ошибка при создании проекта. Попробуйте позже.');
+        
+        // Более информативные сообщения об ошибках
+        let errorMessage = '❌ Ошибка при создании проекта. Попробуйте позже.';
+        
+        if (error.message.includes('ON CONFLICT')) {
+            errorMessage = '❌ Ошибка базы данных: конфликт данных. Обратитесь к администратору.';
+        } else if (error.message.includes('duplicate key')) {
+            errorMessage = '❌ Проект с таким названием уже существует. Выберите другое название.';
+        } else if (error.message.includes('foreign key')) {
+            errorMessage = '❌ Ошибка: указанный менеджер не найден в системе.';
+        } else if (error.message.includes('not found')) {
+            errorMessage = '❌ Ошибка: пользователь не найден. Попробуйте перезапустить бота.';
+        }
+        
+        await ctx.reply(errorMessage);
     }
 }
 
@@ -1095,16 +1232,25 @@ const projectPreview = async (ctx) => {
             message += `⏰ <b>Срок:</b> ${project.deadline}\n`;
         }
         
-        if (project.requirements) {
-            message += `\n📋 <b>Требования к менеджеру:</b>\n${project.requirements}\n`;
+        // Добавляем требования к менеджеру
+        if (project.manager_requirements) {
+            message += `\n📋 <b>Требования к менеджеру:</b>\n${project.manager_requirements}\n`;
+        } else {
+            message += `\n📋 <b>Требования к менеджеру:</b> не указаны\n`;
         }
         
+        // Добавляем условия работы
         if (project.work_conditions) {
             message += `\n⚙️ <b>Условия работы:</b>\n${project.work_conditions}\n`;
+        } else {
+            message += `\n⚙️ <b>Условия работы:</b> не указаны\n`;
         }
         
-        if (project.additional_wishes) {
-            message += `\n💡 <b>Дополнительные пожелания:</b>\n${project.additional_wishes}\n`;
+        // Добавляем дополнительные пожелания
+        if (project.additional_notes) {
+            message += `\n💡 <b>Дополнительные пожелания:</b>\n${project.additional_notes}\n`;
+        } else {
+            message += `\n💡 <b>Дополнительные пожелания:</b> нет\n`;
         }
         
         message += `\n👤 <b>Заказчик:</b> @${customer.username || customer.first_name}\n`;

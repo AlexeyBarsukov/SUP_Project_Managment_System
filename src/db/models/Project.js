@@ -99,6 +99,20 @@ class Project {
         }
     }
 
+    static async hasMember(projectId, userId, role) {
+        const query = `
+            SELECT 1 FROM project_members 
+            WHERE project_id = $1 AND user_id = $2 AND role = $3
+        `;
+        
+        try {
+            const result = await pool.query(query, [projectId, userId, role]);
+            return result.rows.length > 0;
+        } catch (error) {
+            throw new Error(`Error checking project member: ${error.message}`);
+        }
+    }
+
     static async removeMember(projectId, userId) {
         const query = 'DELETE FROM project_members WHERE project_id = $1 AND user_id = $2';
         

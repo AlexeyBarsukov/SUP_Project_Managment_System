@@ -110,6 +110,21 @@ const handleRoleSelection = async (ctx) => {
             return ctx.reply('❌ Пользователь не найден. Используйте /start для регистрации.');
         }
 
+        // Логируем изменение роли (если это не первое назначение роли)
+        if (user.main_role !== selectedRole) {
+            const AuditLog = require('../../db/models/AuditLog');
+            await AuditLog.create(
+                ctx.from.id,
+                'ROLE_CHANGE',
+                null,
+                { 
+                    oldRole: user.main_role || 'unknown', 
+                    newRole: selectedRole,
+                    username: user.username 
+                }
+            );
+        }
+
         // Обновляем ctx.user для корректной работы профиля
         ctx.user = await User.findByTelegramId(ctx.from.id);
 

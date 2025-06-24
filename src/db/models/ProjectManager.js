@@ -4,7 +4,10 @@ class ProjectManager {
     static async create({ project_id, manager_id, status = 'pending', offer = null }) {
         const query = `
             INSERT INTO project_managers (project_id, manager_id, status, offer)
-            VALUES ($1, $2, $3, $4) RETURNING *
+            VALUES ($1, $2, $3, $4) 
+            ON CONFLICT (project_id, manager_id) 
+            DO UPDATE SET status = $3, offer = $4
+            RETURNING *
         `;
         const values = [project_id, manager_id, status, offer];
         const result = await pool.query(query, values);
@@ -50,6 +53,12 @@ class ProjectManager {
     static async deleteByProjectAndManager(project_id, manager_id) {
         const query = `DELETE FROM project_managers WHERE project_id = $1 AND manager_id = $2`;
         const result = await pool.query(query, [project_id, manager_id]);
+        return result.rowCount > 0;
+    }
+
+    static async deleteById(id) {
+        const query = `DELETE FROM project_managers WHERE id = $1`;
+        const result = await pool.query(query, [id]);
         return result.rowCount > 0;
     }
 }

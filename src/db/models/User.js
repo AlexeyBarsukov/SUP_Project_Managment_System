@@ -244,6 +244,23 @@ class User {
             throw new Error(`Error finding user by id: ${error.message}`);
         }
     }
+
+    /**
+     * Обновляет одно поле профиля менеджера по telegram_id
+     * @param {string|number} telegram_id
+     * @param {string} field
+     * @param {any} value
+     */
+    static async updateProfileField(telegram_id, field, value) {
+        const allowedFields = ['specialization', 'experience', 'skills', 'salary_range', 'contacts'];
+        if (!allowedFields.includes(field)) throw new Error('Недопустимое поле профиля');
+        let val = value;
+        if (field === 'skills' && Array.isArray(value)) {
+            val = JSON.stringify(value);
+        }
+        const query = `UPDATE users SET ${field} = $1 WHERE telegram_id = $2`;
+        await pool.query(query, [val, telegram_id]);
+    }
 }
 
 module.exports = User; 
