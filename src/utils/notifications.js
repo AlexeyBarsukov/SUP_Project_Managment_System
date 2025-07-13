@@ -121,6 +121,9 @@ const notifyProjectStatusChanged = async (ctx, project, oldStatus, newStatus, me
     const statusNames = {
         'draft': 'Черновик',
         'active': 'Активный',
+        'searching_manager': 'Поиск менеджера',
+        'searching_executors': 'Поиск исполнителей',
+        'in_progress': 'В работе',
         'archived': 'Архив'
     };
     

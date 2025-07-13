@@ -1,5 +1,6 @@
 const User = require('../../db/models/User');
 const { roleSelectionKeyboard } = require('../keyboards');
+const { Markup } = require('telegraf');
 
 const roleCheck = (allowedRoles) => {
     return async (ctx, next) => {
@@ -60,10 +61,85 @@ const managerOnly = roleCheck(['manager']);
 const executorOnly = roleCheck(['executor']);
 const customerOrManager = roleCheck(['customer', 'manager']);
 
+// Middleware: Исполнитель должен заполнить профиль для доступа к функционалу
+const executorProfileRequired = () => {
+    return async (ctx, next) => {
+        if (ctx.user && ctx.user.main_role === 'executor') {
+            // Разрешаем только команду /profile, /fill_profile и кнопки, связанные с профилем
+            const allowedCommands = ['/profile', '/fill_profile', '⚙️ Профиль', 'Заполнить профиль', '✏️ Редактировать профиль'];
+            const projectCommands = [
+                'мои проекты', 'доступные проекты', 'отклики', 'найти проекты', 'моя активность',
+                '/tasks', '/projects', '/responses'
+            ];
+            const text = (ctx.message?.text || ctx.update?.message?.text || ctx.callbackQuery?.data || '').toLowerCase();
+
+            // --- Исправление: всегда разрешаем /fill_profile и callback 'fill_profile' ---
+            // 1. Если это команда /fill_profile
+            if (ctx.message && ctx.message.text && ctx.message.text.trim().toLowerCase().startsWith('/fill_profile')) {
+                return next();
+            }
+            // 2. Если это callback 'fill_profile'
+            if (ctx.callbackQuery && ctx.callbackQuery.data === 'fill_profile') {
+                return next();
+            }
+            // 3. Разрешаем все callback-коды, используемые для шагов заполнения профиля исполнителя
+            const allowedProfileStepCallbacks = [
+                /^spec_/, /^exp_/, /^skill_/, 'skills_done', 'skills_clear', 'profile_back',
+                'fill_achievements', 'skip_optional', 'fill_salary', 'fill_contacts', /^salary_/, 'fill_profile_yes', 'fill_profile_no'
+            ];
+            if (ctx.callbackQuery && ctx.callbackQuery.data) {
+                for (const pattern of allowedProfileStepCallbacks) {
+                    if (typeof pattern === 'string' && ctx.callbackQuery.data === pattern) return next();
+                    if (pattern instanceof RegExp && pattern.test(ctx.callbackQuery.data)) return next();
+                }
+            }
+            // 4. Разрешаем любые текстовые сообщения, если пользователь в процессе заполнения профиля исполнителя
+            if (ctx.session && ctx.session.executorProfile && ctx.session.executorProfile.step) {
+                if (ctx.message && ctx.message.text) {
+                    return next();
+                }
+            }
+            // ------------------------------------------------------
+
+            // Проверяем заполненность профиля
+            const isComplete = await User.isExecutorProfileFullyComplete(ctx.user.telegram_id);
+
+            // Если профиль заполнен, разрешаем все команды
+            if (isComplete) {
+                return next();
+            }
+
+            // Если профиль не заполнен, блокируем доступ к проектам
+            if (projectCommands.some(cmd => text.includes(cmd))) {
+                await ctx.reply(
+                    '🔒 Доступ закрыт! Сначала заполните профиль.\nНажмите /fill_profile или кнопку ниже.',
+                    Markup.inlineKeyboard([
+                        [Markup.button.callback('Заполнить профиль', 'fill_profile')]
+                    ])
+                );
+                return;
+            }
+
+            // Разрешаем только команды профиля
+            if (!allowedCommands.some(cmd => text && text.includes(cmd))) {
+                await ctx.reply(
+                    '🔒 Доступ закрыт! Сначала заполните профиль.\nНажмите /fill_profile или кнопку ниже.',
+                    Markup.inlineKeyboard([
+                        [Markup.button.callback('Заполнить профиль', 'fill_profile')]
+                    ])
+                );
+                return;
+            }
+        }
+        return next();
+    };
+};
+
 module.exports = {
     roleCheck,
     customerOnly,
     managerOnly,
     executorOnly,
-    customerOrManager
+    customerOrManager,
+    executorProfileRequired
 }; 

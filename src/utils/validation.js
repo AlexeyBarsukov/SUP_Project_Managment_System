@@ -56,7 +56,7 @@ const validateRole = (role) => {
 
 // Валидация статуса проекта
 const validateProjectStatus = (status) => {
-    const validStatuses = ['draft', 'active', 'archived'];
+    const validStatuses = ['draft', 'active', 'archived', 'searching_manager', 'searching_executors', 'in_progress'];
     if (!validStatuses.includes(status)) {
         return { isValid: false, error: 'Неверный статус проекта' };
     }
@@ -153,6 +153,10 @@ const PROFILE_VALIDATION = {
         maxLength: 100,
         pattern: /^[@a-zA-Z0-9_+\-()\s]+$/,
         example: "@username или +79041234567"
+    },
+    ACHIEVEMENTS: {
+        maxLength: 300,
+        example: 'Увеличил прибыль проекта на 30% за полгода'
     }
 };
 

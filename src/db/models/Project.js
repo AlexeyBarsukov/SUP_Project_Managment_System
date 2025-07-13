@@ -87,7 +87,6 @@ class Project {
         const query = `
             INSERT INTO project_members (project_id, user_id, role)
             VALUES ($1, $2, $3)
-            ON CONFLICT (project_id, user_id) DO UPDATE SET role = $3
             RETURNING *
         `;
         
@@ -95,6 +94,10 @@ class Project {
             const result = await pool.query(query, [projectId, userId, role]);
             return result.rows[0];
         } catch (error) {
+            // Если пользователь уже есть в проекте, игнорируем ошибку
+            if (error.code === '23505') { // unique_violation
+                return null;
+            }
             throw new Error(`Error adding project member: ${error.message}`);
         }
     }
@@ -198,11 +201,14 @@ class Project {
         const pmInsert = `
             INSERT INTO project_members (user_id, project_id, role)
             VALUES ($1, $2, 'manager')
-            ON CONFLICT (project_id, user_id) DO UPDATE SET role = 'manager'
         `;
         try {
             await pool.query(pmInsert, [userId, projectId]);
         } catch (error) {
+            // Если пользователь уже есть в проекте, игнорируем ошибку
+            if (error.code === '23505') { // unique_violation
+                return;
+            }
             throw new Error(`Ошибка обновления project_members: ${error.message}`);
         }
     }
@@ -217,11 +223,14 @@ class Project {
         const query = `
             INSERT INTO project_members (user_id, project_id, role)
             VALUES ($1, $2, $3)
-            ON CONFLICT (project_id, user_id) DO UPDATE SET role = $3
         `;
         try {
             await pool.query(query, [userId, projectId, role]);
         } catch (error) {
+            // Если пользователь уже есть в проекте, игнорируем ошибку
+            if (error.code === '23505') { // unique_violation
+                return;
+            }
             throw new Error(`Error adding user to project roles: ${error.message}`);
         }
     }
@@ -310,6 +319,139 @@ class Project {
             return result.rows;
         } catch (error) {
             throw new Error(`Error finding projects by manager: ${error.message}`);
+        }
+    }
+
+    // Найти проекты, доступные для исполнителей
+    static async findAvailableForExecutors() {
+        const query = `
+            SELECT p.*, u.username as customer_username, u.first_name as customer_first_name
+            FROM projects p
+            JOIN users u ON p.customer_id = u.id
+            WHERE p.status = 'searching_executors'
+            ORDER BY p.created_at DESC
+        `;
+        try {
+            const result = await pool.query(query);
+            return result.rows;
+        } catch (error) {
+            throw new Error(`Error finding projects for executors: ${error.message}`);
+        }
+    }
+
+    // Получить проект с ролями для просмотра исполнителем
+    static async findByIdWithRoles(id) {
+        const query = `
+            SELECT p.*, u.username as customer_username, u.first_name as customer_first_name,
+                   u.contacts as customer_contacts
+            FROM projects p
+            JOIN users u ON p.customer_id = u.id
+            WHERE p.id = $1
+        `;
+        
+        try {
+            const result = await pool.query(query, [id]);
+            const project = result.rows[0];
+            
+            if (project) {
+                // Получаем роли проекта
+                const ProjectRole = require('./ProjectRole');
+                const roles = await ProjectRole.findByProjectId(id);
+                project.roles = roles;
+            }
+            
+            return project;
+        } catch (error) {
+            throw new Error(`Error finding project with roles: ${error.message}`);
+        }
+    }
+
+    // Проверить, может ли исполнитель откликнуться на проект
+    static async canExecutorApply(projectId, executorId) {
+        const query = `
+            SELECT 1 FROM project_members 
+            WHERE project_id = $1 AND user_id = $2 AND role = 'executor'
+        `;
+        
+        try {
+            const result = await pool.query(query, [projectId, executorId]);
+            return result.rows.length === 0; // Может откликнуться, если еще не участвует
+        } catch (error) {
+            throw new Error(`Error checking executor application: ${error.message}`);
+        }
+    }
+
+    // Получить настройки повторных откликов для проекта
+    static async getReapplySettings(projectId) {
+        const query = 'SELECT allow_reapply FROM projects WHERE id = $1';
+        
+        try {
+            const result = await pool.query(query, [projectId]);
+            return result.rows[0]?.allow_reapply ?? true; // По умолчанию разрешено
+        } catch (error) {
+            throw new Error(`Error getting reapply settings: ${error.message}`);
+        }
+    }
+
+    // Обновить настройки повторных откликов для проекта
+    static async updateReapplySettings(projectId, allowReapply) {
+        const query = 'UPDATE projects SET allow_reapply = $1 WHERE id = $2 RETURNING *';
+        
+        try {
+            const result = await pool.query(query, [allowReapply, projectId]);
+            return result.rows[0];
+        } catch (error) {
+            throw new Error(`Error updating reapply settings: ${error.message}`);
+        }
+    }
+
+    // Проверить, может ли исполнитель повторно откликнуться на проект
+    static async canExecutorReapply(projectId, executorId) {
+        const client = await pool.connect();
+        
+        try {
+            await client.query('BEGIN');
+            
+            // Проверяем настройки проекта
+            const projectQuery = 'SELECT allow_reapply FROM projects WHERE id = $1';
+            const projectResult = await client.query(projectQuery, [projectId]);
+            
+            if (projectResult.rows.length === 0) {
+                throw new Error('Project not found');
+            }
+            
+            const allowReapply = projectResult.rows[0].allow_reapply;
+            
+            if (!allowReapply) {
+                return { canReapply: false, reason: 'reapply_disabled' };
+            }
+            
+            // Проверяем, есть ли отклоненная заявка
+            const applicationQuery = `
+                SELECT id, status, rejected_at 
+                FROM executor_applications 
+                WHERE project_id = $1 AND executor_id = $2 AND status = 'declined'
+                ORDER BY rejected_at DESC
+                LIMIT 1
+            `;
+            
+            const appResult = await client.query(applicationQuery, [projectId, executorId]);
+            
+            if (appResult.rows.length === 0) {
+                return { canReapply: true, reason: 'no_previous_application' };
+            }
+            
+            // Если есть отклоненная заявка и повторные отклики разрешены
+            return { 
+                canReapply: true, 
+                reason: 'reapply_allowed',
+                lastRejectedAt: appResult.rows[0].rejected_at
+            };
+            
+        } catch (error) {
+            throw new Error(`Error checking reapply possibility: ${error.message}`);
+        } finally {
+            client.release();
         }
     }
 }

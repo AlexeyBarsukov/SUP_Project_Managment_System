@@ -2,7 +2,7 @@ const { Telegraf, session } = require('telegraf');
 require('dotenv').config();
 
 // Импорт middleware
-const { roleCheck, customerOnly, managerOnly, executorOnly } = require('./bot/middlewares/roleCheck');
+const { roleCheck, customerOnly, managerOnly, executorOnly, executorProfileRequired } = require('./bot/middlewares/roleCheck');
 const { standardRateLimit, joinProjectRateLimit, createProjectLimit, redisClient } = require('./bot/middlewares/rateLimit');
 
 // Импорт команд
@@ -21,8 +21,34 @@ const {
     handleDeleteConfirmation,
     performProjectDeletion,
     projectPreview,
+    showProjectForExecutor,
+    handleExecutorApplication,
+    handleExecutorRoleSelection,
+    startAddVacancies,
+    handleVacancyStep,
+    viewVacancies,
+    editVacancies,
+    viewApplications,
+    acceptApplication,
+    confirmAcceptApplication,
+    declineApplication,
+    confirmDeclineApplication,
+    handleAlreadyAccepted,
+    handleApplicationPending,
+    handleReapplyDisabled,
+    handleReapplySettings,
+    handleSetReapply,
+    handleRefreshProject,
+    showRoleEditMenu,
+    startEditRole,
+    handleRoleEditStep,
+    deleteRole,
     // Добавьте другие функции по необходимости
 } = require('./bot/commands/projects');
+
+// Импорт команд профиля исполнителя
+const { handleFillProfileCommand, handleExecutorProfileStep } = require('./bot/commands/profile');
+
 
 // Импорт команд профиля менеджера
 const {
@@ -41,6 +67,8 @@ const {
     handleFillAchievements,
     handleFillSalary,
     handleFillContacts,
+    handleFillProfileYes,
+    handleFillProfileNo,
     showEditProfileMenu,
     showEditFieldList,
     handleEditFieldInput,
@@ -77,13 +105,14 @@ bot.use(session());
 
 // Middleware для подтягивания пользователя по Telegram ID
 bot.use(async (ctx, next) => {
-    console.log('Middleware 1 - start');
     if (!ctx.user && ctx.from && ctx.from.id) {
         ctx.user = await User.findByTelegramId(ctx.from.id);
     }
     await next();
-    console.log('Middleware 1 - end');
 });
+
+// Middleware для проверки заполненности профиля исполнителя
+bot.use(executorProfileRequired());
 
 // Глобальная обработка ошибок
 bot.catch((err, ctx) => {
@@ -98,6 +127,14 @@ bot.start(startCommand);
 // Обработка выбора роли
 bot.hears(['👤 Заказчик', '👨‍💼 Менеджер', '👷 Исполнитель'], handleRoleSelection);
 
+bot.hears('Заполнить профиль', handleFillProfileCommand);
+
+// Обработка callback query для кнопки "Заполнить профиль"
+bot.action('fill_profile', handleFillProfileCommand);
+
+// Обработка callback query для кнопки "Заполнить профиль менеджера"
+bot.action('fill_manager_profile', handleFillProfileCommand);
+
 // Обработка текстовых команд с проверкой ролей
 bot.hears(/^\s*📋\s*Мои проекты\s*$/i,
     async (ctx, next) => {
@@ -106,7 +143,6 @@ bot.hears(/^\s*📋\s*Мои проекты\s*$/i,
     },
     roleCheck(['customer','manager','executor']),
     async (ctx, next) => {
-      console.log('before myProjects');
       ctx.message.handled = true;
       await next();
     },
@@ -135,14 +171,14 @@ bot.hears('➕ Создать проект',
     startCreateProject
 );
 bot.hears('🔍 Найти менеджеров', customerOnly, handleManagersCommand);
-bot.hears('🔍 Найти исполнителей', customerOnly, async (ctx) => {
-    // TODO: Реализовать поиск исполнителей
-    await ctx.reply('🔍 <b>Поиск исполнителей</b>\n\nФункция в разработке.', { parse_mode: 'HTML' });
-});
+// Убрали кнопку "Найти исполнителей" для заказчика
 
 // Команды для менеджера
-bot.hears(['📝 Заполнить профиль', '✏️ Редактировать профиль'], managerOnly, async (ctx) => {
-    await showEditProfileMenu(ctx);
+bot.hears('📝 Заполнить профиль', managerOnly, handleFillProfileCommand);
+
+// Команды для редактирования профиля (универсальные)
+bot.hears('✏️ Редактировать профиль', roleCheck(['manager', 'executor']), async (ctx) => {
+    await showEditProfileMenu(ctx, ctx.user);
 });
 bot.hears('🔍 Найти исполнителей', managerOnly, async (ctx) => {
     // TODO: Реализовать поиск исполнителей
@@ -198,7 +234,7 @@ bot.hears('⚙️ Профиль', roleCheck(), async (ctx) => {
         }
     }
     
-    // Если менеджер, добавить раздел "О себе"
+    // Если менеджер или исполнитель, добавить раздел "О себе"
     let aboutMe = '';
     if (ctx.user.main_role === 'manager') {
         const profile = await User.getManagerProfile(ctx.user.telegram_id);
@@ -214,6 +250,22 @@ bot.hears('⚙️ Профиль', roleCheck(), async (ctx) => {
             if (profile.salary_range) aboutMe += `• <b>Зарплата:</b> ${profile.salary_range}\n`;
             if (profile.contacts) aboutMe += `• <b>Контакты:</b> ${profile.contacts}\n`;
         }
+    } else if (ctx.user.main_role === 'executor') {
+        // Для исполнителя получаем профиль через специальный метод
+        const executorProfile = await User.getExecutorProfile(ctx.user.telegram_id);
+        if (executorProfile && (executorProfile.specialization || executorProfile.skills || executorProfile.contacts || executorProfile.achievements)) {
+            aboutMe += '\n\n<b>Профиль исполнителя:</b>\n';
+            if (executorProfile.specialization) aboutMe += `• <b>Специализация:</b> ${executorProfile.specialization}\n`;
+            if (executorProfile.skills) {
+                let skills = executorProfile.skills;
+                if (Array.isArray(skills)) {
+                    skills = skills.join(', ');
+                }
+                aboutMe += `• <b>Навыки:</b> ${skills}\n`;
+            }
+            if (executorProfile.contacts) aboutMe += `• <b>Контакты:</b> ${executorProfile.contacts}\n`;
+            if (executorProfile.achievements) aboutMe += `• <b>О себе:</b> ${executorProfile.achievements}\n`;
+        }
     }
     await ctx.reply(
         `👤 <b>Вы - ${roleNames[ctx.user.main_role] || ctx.user.main_role}</b>\n\n` +
@@ -228,6 +280,8 @@ bot.hears('⚙️ Профиль', roleCheck(), async (ctx) => {
             parse_mode: 'HTML',
             reply_markup: ctx.user.main_role === 'manager'
                 ? getManagerMenuKeyboard(!!aboutMe).reply_markup
+                : ctx.user.main_role === 'executor'
+                ? getKeyboardByRole('executor', await User.isExecutorProfileFullyComplete(ctx.user.telegram_id)).reply_markup
                 : profileKeyboard(ctx.user.main_role, ctx.user.telegram_id, ADMIN_ID).reply_markup
         }
     );
@@ -297,7 +351,9 @@ bot.hears(['👤 Заказчик', '👨‍💼 Менеджер', '👷 Исп
             `Теперь вы можете использовать все функции, доступные для вашей роли.`,
             {
                 parse_mode: 'HTML',
-                reply_markup: profileKeyboard(selectedRole, ctx.user.telegram_id, ADMIN_ID).reply_markup
+                reply_markup: selectedRole === 'executor'
+                    ? getKeyboardByRole('executor', await User.isExecutorProfileFullyComplete(ctx.user.telegram_id)).reply_markup
+                    : profileKeyboard(selectedRole, ctx.user.telegram_id, ADMIN_ID).reply_markup
             }
         );
     } else {
@@ -326,6 +382,14 @@ bot.on('text', async (ctx, next) => {
         ctx.session?.waitingForSpecializationInput ||
         ctx.session?.waitingForSkillsInput) {
         return handleTextInput(ctx);
+    }
+    
+    // Обработка редактирования профиля (универсально)
+    if (ctx.session?.editProfileMode === 'one_field' && ctx.session?.editProfileField) {
+        const user = await User.findByTelegramId(ctx.from.id);
+        if (user) {
+            return handleEditFieldValue(ctx, user);
+        }
     }
     
     // Проверяем, есть ли активный чат по проекту
@@ -365,6 +429,23 @@ bot.on('text', async (ctx, next) => {
         const user = await User.findByTelegramId(ctx.from.id);
         await handleEditFieldValue(ctx, user);
         return;
+    }
+    
+    if (ctx.session && ctx.session.executorProfile) {
+        await handleExecutorProfileStep(ctx);
+        return;
+    }
+    
+    // Обработка шагов добавления вакансий
+    if (ctx.session?.addingVacancies) {
+        const handled = await handleVacancyStep(ctx);
+        if (handled) return;
+    }
+    
+    // Обработка шагов редактирования вакансий
+    if (ctx.session?.editingRole) {
+        const handled = await handleRoleEditStep(ctx);
+        if (handled) return;
     }
     
     return next();
@@ -489,15 +570,74 @@ bot.action(/^manager_/, handleManagerProfile);
 bot.action('back_to_managers', handleBackToManagers);
 bot.action('fill_salary', handleFillSalary);
 bot.action('fill_contacts', handleFillContacts);
+bot.action('fill_profile_yes', handleFillProfileYes);
+bot.action('fill_profile_no', handleFillProfileNo);
+
+// Обработчик обновления списка доступных проектов
+bot.action('refresh_available_projects', async (ctx) => {
+    await ctx.answerCbQuery();
+    await availableProjects(ctx);
+});
+
+// Обработчики редактирования профиля (универсальные)
+bot.action('edit_one_field', async (ctx) => {
+    const user = await User.findByTelegramId(ctx.from.id);
+    if (!user) {
+        await ctx.answerCbQuery('❌ Пользователь не найден');
+        return;
+    }
+    await showEditFieldList(ctx, user);
+    await ctx.answerCbQuery();
+});
+
+bot.action('edit_full_profile', async (ctx) => {
+    const user = await User.findByTelegramId(ctx.from.id);
+    if (!user) {
+        await ctx.answerCbQuery('❌ Пользователь не найден');
+        return;
+    }
+    if (user.main_role === 'executor') {
+        // Для исполнителя запускаем заполнение профиля заново
+        ctx.session = ctx.session || {};
+        ctx.session.executorProfile = { step: 'specialization', data: {} };
+        await ctx.reply('Заполните профиль исполнителя заново!\n\nСфера деятельности (обязательно):\nНапишите вашу специализацию или выберите из списка.', {
+            reply_markup: {
+                keyboard: [["IT"], ["Дизайн"], ["Маркетинг"], ["Строительство"], ["Другое"]],
+                resize_keyboard: true,
+                one_time_keyboard: true
+            }
+        });
+    } else {
+        // Для менеджера запускаем стандартное заполнение
+        await showEditProfileMenu(ctx, user);
+    }
+    await ctx.answerCbQuery();
+});
+
+bot.action('edit_cancel', async (ctx) => {
+    ctx.session = ctx.session || {};
+    ctx.session.editProfileMode = null;
+    ctx.session.editProfileField = null;
+    ctx.session.editProfileUserType = null;
+    await ctx.reply('❌ Редактирование отменено.');
+    await ctx.answerCbQuery();
+});
 
 // Обработка кнопки '🔙 Назад'
 bot.hears('🔙 Назад', roleCheck(), async (ctx) => {
-    await ctx.reply(
-        'Главное меню:',
-        {
-            reply_markup: getKeyboardByRole(ctx.user.main_role).reply_markup
+            let replyMarkup;
+        if (ctx.user.main_role === 'executor') {
+            const isProfileComplete = await User.isExecutorProfileFullyComplete(ctx.user.telegram_id);
+            replyMarkup = getKeyboardByRole('executor', isProfileComplete).reply_markup;
+        } else {
+            replyMarkup = getKeyboardByRole(ctx.user.main_role).reply_markup;
         }
-    );
+        await ctx.reply(
+            'Главное меню:',
+            {
+                reply_markup: replyMarkup
+            }
+        );
 });
 
 // Обработка кнопки '🧹 Сбросить лимит'
@@ -606,9 +746,6 @@ bot.action(/^accept_invite_(\d+)$/, async (ctx) => {
 // Обработка отказа менеджера
 bot.action(/^decline_invite_(\d+)$/, async (ctx) => {
     try {
-        console.log('[decline_invite] Начало обработки отказа для проекта:', ctx.match[1]);
-        console.log('[decline_invite] Пользователь:', ctx.from?.id, ctx.from?.username);
-        
         const projectId = ctx.match[1];
         
         // Получаем пользователя
@@ -627,11 +764,8 @@ bot.action(/^decline_invite_(\d+)$/, async (ctx) => {
             return;
         }
         
-        console.log('[decline_invite] Проект найден:', project.name);
-        
         // Проверяем, что пользователь не является заказчиком
         if (project.customer_id === ctx.user.id) {
-            console.log('[decline_invite] Заказчик не может отказаться от своего проекта');
             await ctx.answerCbQuery('❌ Заказчик не может отказаться от своего проекта.');
             return;
         }
@@ -656,11 +790,9 @@ bot.action(/^decline_invite_(\d+)$/, async (ctx) => {
             if (pm.status === 'pending') {
                 declineType = 'invitation';
                 userRole = 'manager';
-                console.log('[decline_invite] Отказ от приглашения (pending)');
             } else if (pm.status === 'accepted') {
                 declineType = 'accepted_manager';
                 userRole = 'manager';
-                console.log('[decline_invite] Отказ принятого менеджера (accepted)');
             }
         } else if (projectMember) {
             // Пользователь является участником проекта (но не в project_managers)
@@ -669,12 +801,10 @@ bot.action(/^decline_invite_(\d+)$/, async (ctx) => {
             if (userMember) {
                 declineType = 'project_member';
                 userRole = userMember.member_role;
-                console.log('[decline_invite] Отказ участника проекта:', userRole);
             }
         }
         
         if (declineType === 'none') {
-            console.log('[decline_invite] Пользователь не имеет доступа к проекту');
             await ctx.answerCbQuery('❌ Вы не являетесь участником этого проекта.');
             return;
         }
@@ -682,18 +812,15 @@ bot.action(/^decline_invite_(\d+)$/, async (ctx) => {
         // Обрабатываем отказ в зависимости от типа
         if (declineType === 'invitation') {
             // Отказ от приглашения - обновляем статус на declined
-            console.log('[decline_invite] Обновляем статус приглашения на declined');
             await ProjectManager.updateStatus(pm.id, 'declined');
             
         } else if (declineType === 'accepted_manager') {
             // Отказ принятого менеджера - удаляем из project_members и project_managers
-            console.log('[decline_invite] Удаляем принятого менеджера');
             await Project.removeMember(projectId, ctx.user.id);
             await ProjectManager.deleteByProjectAndManager(projectId, ctx.user.id);
             
         } else if (declineType === 'project_member') {
             // Отказ участника проекта - удаляем из project_members
-            console.log('[decline_invite] Удаляем участника проекта');
             await Project.removeMember(projectId, ctx.user.id);
         }
         
@@ -701,12 +828,8 @@ bot.action(/^decline_invite_(\d+)$/, async (ctx) => {
         const remainingManagers = await ProjectManager.findByProject(projectId);
         const acceptedManagers = remainingManagers.filter(m => m.status === 'accepted');
         
-        console.log('[decline_invite] Оставшиеся менеджеры:', acceptedManagers.length);
-        
         // Если нет принятых менеджеров, возвращаем проект к заказчику
         if (acceptedManagers.length === 0) {
-            console.log('[decline_invite] Нет менеджеров, возвращаем проект заказчику');
-            
             // Добавляем заказчика как менеджера
             await Project.addMember(projectId, project.customer_id, 'manager');
             await ProjectManager.create({ 
@@ -730,7 +853,6 @@ bot.action(/^decline_invite_(\d+)$/, async (ctx) => {
                 message = `❌ ${roleText.charAt(0).toUpperCase() + roleText.slice(1)} @${ctx.user.username || 'пользователь'} отказался от участия в проекте «${project.name}».`;
             }
             
-            console.log('[decline_invite] Отправляем уведомление заказчику:', customer.telegram_id);
             await ctx.telegram.sendMessage(customer.telegram_id, message);
         }
         
@@ -747,8 +869,6 @@ bot.action(/^decline_invite_(\d+)$/, async (ctx) => {
             }
         );
         
-        console.log('[decline_invite] Отказ обработан успешно');
-        
         // Отвечаем пользователю в зависимости от типа отказа
         let responseMessage;
         if (declineType === 'invitation') {
@@ -764,7 +884,7 @@ bot.action(/^decline_invite_(\d+)$/, async (ctx) => {
             ctx.params = [projectId];
             await projectDetails(ctx);
         } catch (error) {
-            console.log('[decline_invite] Ошибка при обновлении карточки проекта:', error.message);
+            console.error('Error updating project card:', error);
         }
         
     } catch (error) {
@@ -775,25 +895,176 @@ bot.action(/^decline_invite_(\d+)$/, async (ctx) => {
 
 // Обработка подробного просмотра проекта
 bot.action(/^project_details_(\d+)$/, async (ctx) => {
-    console.log('=== PROJECT DETAILS ACTION TRIGGERED ===');
-    console.log('User:', ctx.user?.id, ctx.user?.username);
-    console.log('Match:', ctx.match);
-    
     const projectId = ctx.match[1];
-    console.log('=== PROJECT DETAILS ACTION ===');
-    console.log('Project ID from action:', projectId);
     
     // Создаем контекст для функции projectDetails
     ctx.params = [projectId];
     
     try {
-        await projectDetails(ctx);
+        // Проверяем роль пользователя и направляем к соответствующей функции
+        if (ctx.user.main_role === 'executor') {
+            await showProjectForExecutor(ctx);
+        } else {
+            await projectDetails(ctx);
+        }
     } catch (error) {
         console.error('Error in project_details action:', error);
         await ctx.reply('❌ Произошла ошибка при загрузке проекта.');
     }
     
     await ctx.answerCbQuery();
+});
+
+// Обработка отклика исполнителя на проект
+bot.action(/^apply_to_project_(\d+)$/, handleExecutorApplication);
+
+// Обработка выбора роли для отклика
+bot.action(/^apply_role_(\d+)_(\d+)$/, handleExecutorRoleSelection);
+
+// Обработка отмены заявки
+bot.action('cancel_application', async (ctx) => {
+    delete ctx.session?.pendingApplication;
+    await ctx.editMessageText('❌ Заявка отменена.');
+    await ctx.answerCbQuery();
+});
+
+// Обработка кнопки "Вы уже откликнулись"
+bot.action('already_applied', async (ctx) => {
+    await ctx.answerCbQuery('ℹ️ Вы уже откликались на этот проект');
+});
+
+// Обработка обновления проекта
+bot.action(/^refresh_project_(\d+)$/, async (ctx) => {
+    const projectId = ctx.match[1];
+    ctx.params = [projectId];
+    
+    if (ctx.user.main_role === 'executor') {
+        await showProjectForExecutor(ctx);
+    } else {
+        await projectDetails(ctx);
+    }
+    
+    await ctx.answerCbQuery();
+});
+
+// Обработка добавления вакансий к проекту
+bot.action(/^add_vacancies_(\d+)$/, startAddVacancies);
+
+// Обработка просмотра вакансий проекта
+bot.action(/^view_vacancies_(\d+)$/, viewVacancies);
+
+// Обработка редактирования вакансий проекта
+bot.action(/^edit_vacancies_(\d+)$/, editVacancies);
+
+// Обработка редактирования отдельных вакансий
+bot.action(/^edit_role_(\d+)$/, showRoleEditMenu);
+bot.action(/^edit_role_(name|positions|salary|description)_(\d+)$/, startEditRole);
+bot.action(/^edit_role_required_skills_(\d+)$/, startEditRole);
+bot.action(/^delete_role_(\d+)$/, deleteRole);
+
+// Обработка просмотра откликов на проект
+bot.action(/^view_applications_(\d+)$/, viewApplications);
+
+// Обработка принятия отклика
+bot.action(/^accept_application_(\d+)$/, acceptApplication);
+
+// Обработка подтверждения принятия отклика
+bot.action(/^confirm_accept_(\d+)$/, confirmAcceptApplication);
+
+// Обработка отклонения отклика
+bot.action(/^decline_application_(\d+)$/, declineApplication);
+
+// Обработка подтверждения отклонения отклика
+bot.action(/^confirm_decline_(\d+)$/, confirmDeclineApplication);
+
+// Обработка новых callback'ов для исполнителей
+bot.action('already_accepted', handleAlreadyAccepted);
+bot.action('application_pending', handleApplicationPending);
+bot.action('reapply_disabled', handleReapplyDisabled);
+bot.action(/^refresh_project_(\d+)$/, handleRefreshProject);
+
+// Обработка настроек повторных откликов
+bot.action(/^reapply_settings_(\d+)$/, handleReapplySettings);
+bot.action(/^set_reapply_(\d+)_(true|false)$/, handleSetReapply);
+
+// Обработка удаления участника из проекта
+bot.action(/^remove_member_(\d+)_(\d+)$/, async (ctx) => {
+    const projectId = ctx.match[1];
+    const userId = ctx.match[2];
+    
+    if (!ctx.user) ctx.user = await User.findByTelegramId(ctx.from.id);
+    
+    const project = await Project.findById(projectId);
+    const userToRemove = await User.findById(userId);
+    
+    if (!project || !userToRemove) {
+        await ctx.answerCbQuery('❌ Проект или пользователь не найден');
+        return;
+    }
+    
+    // Проверяем права доступа - только заказчик или менеджер проекта может удалять участников
+    const isCustomer = project.customer_id === ctx.user.id;
+    const managers = await ProjectManager.findByProject(projectId);
+    const isManager = managers.some(m => m.manager_id === ctx.user.id && m.status === 'accepted');
+    
+    if (!isCustomer && !isManager) {
+        await ctx.answerCbQuery('❌ У вас нет прав для удаления участников из этого проекта');
+        return;
+    }
+    
+    // Проверяем, что пользователь действительно является участником проекта
+    const members = await Project.getMembers(projectId);
+    const memberToRemove = members.find(m => m.id === parseInt(userId));
+    
+    if (!memberToRemove) {
+        await ctx.answerCbQuery('❌ Пользователь не является участником этого проекта');
+        return;
+    }
+    
+    // Нельзя удалить заказчика
+    if (memberToRemove.member_role === 'customer') {
+        await ctx.answerCbQuery('❌ Нельзя удалить заказчика из проекта');
+        return;
+    }
+    
+    try {
+        // Удаляем участника из project_members
+        await Project.removeMember(projectId, userId);
+        
+        // Если удаляем менеджера, также удаляем из project_managers
+        if (memberToRemove.member_role === 'manager') {
+            await ProjectManager.deleteByProjectAndManager(projectId, userId);
+        }
+        
+        // Уведомляем удаленного пользователя
+        await ctx.telegram.sendMessage(
+            userToRemove.telegram_id,
+            `❌ Вас удалили из проекта "${project.name}"`
+        );
+        
+        // Логируем событие
+        await AuditLog.create(
+            ctx.user.id,
+            'MEMBER_REMOVED',
+            projectId,
+            { 
+                removedUserId: userId,
+                removedUsername: userToRemove.username,
+                role: memberToRemove.member_role,
+                projectName: project.name
+            }
+        );
+        
+        await ctx.answerCbQuery(`✅ Пользователь @${userToRemove.username} удален из проекта`);
+        
+        // Обновляем карточку проекта
+        ctx.params = [projectId];
+        await projectDetails(ctx);
+        
+    } catch (error) {
+        console.error('Error in remove_member:', error);
+        await ctx.answerCbQuery('❌ Произошла ошибка при удалении участника');
+    }
 });
 
 // Менеджер принимает проект
@@ -1534,6 +1805,10 @@ bot.action(/^change_status_(\d+)$/, async (ctx) => {
             { text: '🚀 Активный', callback_data: `set_status_${projectId}_active` }
         ],
         [
+            { text: '🔍 Поиск менеджера', callback_data: `set_status_${projectId}_searching_manager` },
+            { text: '🔍 Поиск исполнителей', callback_data: `set_status_${projectId}_searching_executors` }
+        ],
+        [
             { text: '🚧 В работе', callback_data: `set_status_${projectId}_in_progress` },
             { text: '📦 Архив', callback_data: `set_status_${projectId}_archived` }
         ]
@@ -1566,6 +1841,8 @@ bot.action(/^set_status_(\d+)_(.+)$/, async (ctx) => {
     const statusNames = {
         'draft': '📝 Черновик',
         'active': '🚀 Активный',
+        'searching_manager': '🔍 Поиск менеджера',
+        'searching_executors': '🔍 Поиск исполнителей',
         'in_progress': '🚧 В работе',
         'archived': '📦 Архив'
     };
@@ -1901,9 +2178,9 @@ bot.on('text', async (ctx, next) => {
 
 // Обработка неизвестных команд
 bot.on('message', async (ctx, next) => {
-    console.log('Raw message:', ctx.message.text);
+    // Если идёт заполнение профиля исполнителя — не показываем ошибку
+    if (ctx.session && ctx.session.executorProfile) return next();
     if (ctx.message.handled) return next();
-    
     if (ctx.message.text && !ctx.message.text.startsWith('/')) {
         await ctx.reply('❓ Неизвестная команда, нажмите /start и вернитесь в исходное состояние');
     }
@@ -2073,12 +2350,7 @@ bot.command('stopchat', async (ctx) => {
 
 // Обработка предварительного просмотра проекта (для менеджеров)
 bot.action(/^project_preview_(\d+)$/, async (ctx) => {
-    console.log('=== PROJECT PREVIEW ACTION TRIGGERED ===');
-    console.log('User:', ctx.user?.id, ctx.user?.username);
-    console.log('Match:', ctx.match);
-    
     const projectId = ctx.match[1];
-    console.log('Project ID from preview action:', projectId);
     
     // Создаем контекст для функции projectPreview
     ctx.params = [projectId];
@@ -2214,11 +2486,10 @@ bot.action(/^confirm_leave_project_(\d+)$/, async (ctx) => {
             { managerUsername: ctx.user.username, projectName: project.name }
         );
         
-        // 7. Обновляем карточку проекта
-        ctx.params = [projectId];
-        await projectDetails(ctx);
+        // 7. Отправляем подтверждение менеджеру
+        await ctx.reply('✅ Вы успешно покинули проект!');
         
-        await ctx.answerCbQuery('✅ Вы успешно покинули проект!');
+        await ctx.answerCbQuery('✅ Вы покинули проект');
         
     } catch (error) {
         console.error('Error in confirm_leave_project:', error);

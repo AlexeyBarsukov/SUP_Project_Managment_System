@@ -1,5 +1,5 @@
 const User = require('../../db/models/User');
-const { roleSelectionKeyboard, getKeyboardByRole } = require('../keyboards');
+const { roleSelectionKeyboard, getKeyboardByRole, getExecutorMenuKeyboard } = require('../keyboards');
 const { validateRole } = require('../../utils/validation');
 
 const startCommand = async (ctx) => {
@@ -65,14 +65,32 @@ const startCommand = async (ctx) => {
                 'manager': 'Менеджер',
                 'executor': 'Исполнитель'
             };
-
+            let replyMarkup;
+            let isProfileComplete = false;
+            
+            if (user.main_role === 'executor') {
+                isProfileComplete = await User.isExecutorProfileFullyComplete(user.telegram_id);
+                replyMarkup = getKeyboardByRole('executor', isProfileComplete).reply_markup;
+            } else if (user.main_role === 'manager') {
+                isProfileComplete = await User.isManagerProfileFullyComplete(user.telegram_id);
+                replyMarkup = getKeyboardByRole('manager', isProfileComplete).reply_markup;
+            } else {
+                replyMarkup = getKeyboardByRole(user.main_role).reply_markup;
+            }
+            
+            let message = `👋 <b>С возвращением, ${firstName}!</b>\n\nВаша роль: <b>${roleNames[user.main_role]}</b>\n\n`;
+            
+            if (user.main_role === 'manager' && !isProfileComplete) {
+                message += '⚠️ <b>Для доступа к функциям менеджера необходимо заполнить профиль!</b>\n\n';
+            }
+            
+            message += 'Выберите действие:';
+            
             await ctx.reply(
-                `👋 <b>С возвращением, ${firstName}!</b>\n\n` +
-                `Ваша роль: <b>${roleNames[user.main_role]}</b>\n\n` +
-                'Выберите действие:',
+                message,
                 {
                     parse_mode: 'HTML',
-                    reply_markup: getKeyboardByRole(user.main_role).reply_markup
+                    reply_markup: replyMarkup
                 }
             );
         }
@@ -134,13 +152,59 @@ const handleRoleSelection = async (ctx) => {
             'executor': 'Исполнитель'
         };
 
+        // Если пользователь стал исполнителем или менеджером, проверяем заполненность профиля
+        if (selectedRole === 'executor') {
+            const isProfileComplete = await User.isExecutorProfileFullyComplete(ctx.user.telegram_id);
+            if (!isProfileComplete) {
+                await ctx.reply(
+                    'Вы стали исполнителем! Заполните профиль, чтобы получить доступ к задачам/ проектам ✏️',
+                    {
+                        reply_markup: {
+                            inline_keyboard: [[{ text: 'Заполнить профиль', callback_data: 'fill_profile' }]]
+                        }
+                    }
+                );
+            }
+            await ctx.reply(
+                'Меню исполнителя:',
+                {
+                    reply_markup: getKeyboardByRole('executor', isProfileComplete).reply_markup
+                }
+            );
+        } else if (selectedRole === 'manager') {
+            const isProfileComplete = await User.isManagerProfileFullyComplete(ctx.user.telegram_id);
+            if (!isProfileComplete) {
+                await ctx.reply(
+                    'Вы стали менеджером! Заполните профиль, чтобы получить доступ к функциям управления проектами ✏️',
+                    {
+                        reply_markup: {
+                            inline_keyboard: [[{ text: 'Заполнить профиль', callback_data: 'fill_manager_profile' }]]
+                        }
+                    }
+                );
+            }
+            await ctx.reply(
+                'Меню менеджера:',
+                {
+                    reply_markup: getKeyboardByRole('manager', isProfileComplete).reply_markup
+                }
+            );
+        }
+
+        let isProfileComplete = false;
+        if (selectedRole === 'executor') {
+            isProfileComplete = await User.isExecutorProfileFullyComplete(ctx.user.telegram_id);
+        } else if (selectedRole === 'manager') {
+            isProfileComplete = await User.isManagerProfileFullyComplete(ctx.user.telegram_id);
+        }
+
         await ctx.reply(
             `✅ <b>Роль успешно установлена!</b>\n\n` +
             `Ваша роль: <b>${roleNames[selectedRole]}</b>\n\n` +
             `Теперь вы можете использовать все функции, доступные для вашей роли.`,
             {
                 parse_mode: 'HTML',
-                reply_markup: getKeyboardByRole(selectedRole).reply_markup
+                reply_markup: getKeyboardByRole(selectedRole, isProfileComplete).reply_markup
             }
         );
 

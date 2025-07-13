@@ -9,8 +9,8 @@ const roleSelectionKeyboard = Markup.keyboard([
 // Клавиатура для заказчика
 const customerKeyboard = Markup.keyboard([
     ['📋 Мои проекты', '➕ Создать проект'],
-    ['📊 Аудит лог', '⚙️ Профиль'],
-    ['🔍 Найти менеджеров', '🔍 Найти исполнителей']
+    ['⚙️ Профиль'],
+    ['🔍 Найти менеджеров']
 ]).resize();
 
 // Клавиатура для менеджера
@@ -48,12 +48,21 @@ const confirmationKeyboard = Markup.keyboard([
 
 // Динамическая клавиатура профиля по основной роли и ADMIN_ID
 const profileKeyboard = (mainRole, telegramId, adminId) => {
-    const buttons = [
-        [mainRole === 'customer' ? '🔍 Найти менеджеров' : '🔍 Доступные проекты'],
-        ['👤 Изменить роль'],
-        ['📋 Мои проекты'],
-        ['🔙 Назад']
-    ];
+    const buttons = [];
+    
+    if (mainRole === 'customer') {
+        buttons.push(['🔍 Найти менеджеров']);
+    } else if (mainRole === 'executor') {
+        buttons.push(['🔍 Доступные проекты']);
+        buttons.push(['✏️ Редактировать профиль']);
+    } else {
+        buttons.push(['🔍 Доступные проекты']);
+    }
+    
+    buttons.push(['👤 Изменить роль']);
+    buttons.push(['📋 Мои проекты']);
+    buttons.push(['🔙 Назад']);
+    
     if (String(telegramId) === String(adminId)) {
         buttons.splice(1, 0, ['🧹 Сбросить лимит']); // Вставляем после первой строки
     }
@@ -105,23 +114,42 @@ const memberActionsInline = (projectId, userId) => {
 
 // Динамическая клавиатура для менеджера с учётом заполненности профиля
 const getManagerMenuKeyboard = (hasProfile) => {
+    if (!hasProfile) {
+        return Markup.keyboard([
+            ['📝 Заполнить профиль']
+        ]).resize();
+    }
     return Markup.keyboard([
         ['📋 Мои проекты', '🔍 Найти исполнителей'],
-        [hasProfile ? '✏️ Редактировать профиль' : '📝 Заполнить профиль', '⚙️ Профиль'],
+        ['✏️ Редактировать профиль', '⚙️ Профиль'],
         ['👤 Изменить роль', '📊 Статистика'],
         ['🔍 Доступные проекты']
     ]).resize();
 };
 
+// Динамическая клавиатура для исполнителя с учётом заполненности профиля
+const getExecutorMenuKeyboard = (hasProfile) => {
+    if (!hasProfile) {
+        return Markup.keyboard([
+            ['Заполнить профиль']
+        ]).resize();
+    }
+    return Markup.keyboard([
+        ['📋 Мои проекты', '🔍 Доступные проекты'],
+        ['📊 Моя активность', '⚙️ Профиль'],
+        ['✏️ Редактировать профиль', '🔍 Найти проекты']
+    ]).resize();
+};
+
 // Функция для получения клавиатуры по роли
-const getKeyboardByRole = (role) => {
+const getKeyboardByRole = (role, hasProfile) => {
     switch (role) {
         case 'customer':
             return customerKeyboard;
         case 'manager':
-            return managerKeyboard;
+            return getManagerMenuKeyboard(hasProfile);
         case 'executor':
-            return executorKeyboard;
+            return getExecutorMenuKeyboard(hasProfile);
         default:
             return roleSelectionKeyboard;
     }
@@ -141,5 +169,6 @@ module.exports = {
     joinProjectInline,
     memberActionsInline,
     getKeyboardByRole,
-    getManagerMenuKeyboard
+    getManagerMenuKeyboard,
+    getExecutorMenuKeyboard
 }; 

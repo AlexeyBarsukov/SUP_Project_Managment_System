@@ -252,7 +252,7 @@ class User {
      * @param {any} value
      */
     static async updateProfileField(telegram_id, field, value) {
-        const allowedFields = ['specialization', 'experience', 'skills', 'salary_range', 'contacts'];
+        const allowedFields = ['specialization', 'experience', 'skills', 'salary_range', 'contacts', 'achievements'];
         if (!allowedFields.includes(field)) throw new Error('Недопустимое поле профиля');
         let val = value;
         if (field === 'skills' && Array.isArray(value)) {
@@ -260,6 +260,166 @@ class User {
         }
         const query = `UPDATE users SET ${field} = $1 WHERE telegram_id = $2`;
         await pool.query(query, [val, telegram_id]);
+    }
+
+    static async isExecutorProfileComplete(telegramId) {
+        const query = `
+            SELECT specialization
+            FROM users
+            WHERE telegram_id = $1 AND main_role = 'executor'
+        `;
+        const result = await pool.query(query, [telegramId]);
+        const user = result.rows[0];
+        // specialization — обязательное поле
+        return !!(user && user.specialization);
+    }
+
+    static async isExecutorProfileFullyComplete(telegramId) {
+        const query = `
+            SELECT username, specialization, skills, contacts, profile_completed
+            FROM users
+            WHERE telegram_id = $1 AND main_role = 'executor'
+        `;
+        const result = await pool.query(query, [telegramId]);
+        const user = result.rows[0];
+        // Обязательные поля: username, specialization, profile_completed = true
+        // skills и contacts могут быть пустыми (пользователь мог их пропустить)
+        return !!(user && user.username && user.specialization && user.profile_completed);
+    }
+
+    static async setExecutorProfileCompleted(telegramId) {
+        const query = 'UPDATE users SET profile_completed = true WHERE telegram_id = $1';
+        await pool.query(query, [telegramId]);
+    }
+
+    /**
+     * Получает профиль исполнителя
+     * @param {string|number} telegramId
+     */
+    static async getExecutorProfile(telegramId) {
+        const query = `
+            SELECT specialization, skills, contacts, achievements, profile_completed
+            FROM users 
+            WHERE telegram_id = $1 AND main_role = 'executor'
+        `;
+        
+        try {
+            const result = await pool.query(query, [telegramId]);
+            const profile = result.rows[0] || null;
+            
+            // Парсим навыки из JSON, если они есть
+            if (profile && profile.skills) {
+                try {
+                    const skillsArray = JSON.parse(profile.skills);
+                    if (Array.isArray(skillsArray)) {
+                        profile.skills = skillsArray;
+                    }
+                } catch (error) {
+                    // Если не удалось распарсить JSON, оставляем как есть
+                    console.log('Could not parse skills JSON:', error.message);
+                }
+            }
+            
+            return profile;
+        } catch (error) {
+            throw new Error(`Error getting executor profile: ${error.message}`);
+        }
+    }
+
+    /**
+     * Обновляет профиль исполнителя
+     * @param {string|number} telegramId
+     * @param {object} profileData
+     */
+    static async updateExecutorProfile(telegramId, profileData) {
+        const query = `
+            UPDATE users 
+            SET specialization = $1, skills = $2, contacts = $3, achievements = $4
+            WHERE telegram_id = $5 AND main_role = 'executor'
+            RETURNING *
+        `;
+        
+        // Преобразуем навыки в JSON строку, если это массив
+        let skillsValue = profileData.skills;
+        if (Array.isArray(skillsValue)) {
+            skillsValue = JSON.stringify(skillsValue);
+        }
+        
+        const values = [
+            profileData.specialization || null,
+            skillsValue || null,
+            profileData.contacts || null,
+            profileData.achievements || null,
+            telegramId
+        ];
+        
+        try {
+            const result = await pool.query(query, values);
+            return result.rows[0];
+        } catch (error) {
+            throw new Error(`Error updating executor profile: ${error.message}`);
+        }
+    }
+
+    /**
+     * Обновляет одно поле профиля исполнителя
+     * @param {string|number} telegramId
+     * @param {string} field
+     * @param {any} value
+     */
+    static async updateExecutorProfileField(telegramId, field, value) {
+        const allowedFields = ['specialization', 'skills', 'contacts', 'achievements'];
+        if (!allowedFields.includes(field)) throw new Error('Недопустимое поле профиля исполнителя');
+        
+        let val = value;
+        if (field === 'skills' && Array.isArray(value)) {
+            val = JSON.stringify(value);
+        }
+        
+        const query = `UPDATE users SET ${field} = $1 WHERE telegram_id = $2 AND main_role = 'executor'`;
+        await pool.query(query, [val, telegramId]);
+    }
+
+    /**
+     * Проверяет, заполнен ли профиль менеджера (базовая проверка)
+     * @param {string|number} telegramId
+     */
+    static async isManagerProfileComplete(telegramId) {
+        const query = `
+            SELECT specialization
+            FROM users
+            WHERE telegram_id = $1 AND main_role = 'manager'
+        `;
+        const result = await pool.query(query, [telegramId]);
+        const user = result.rows[0];
+        // specialization — обязательное поле для менеджера
+        return !!(user && user.specialization);
+    }
+
+    /**
+     * Проверяет, полностью ли заполнен профиль менеджера
+     * @param {string|number} telegramId
+     */
+    static async isManagerProfileFullyComplete(telegramId) {
+        const query = `
+            SELECT username, specialization, experience, skills, contacts, profile_completed
+            FROM users
+            WHERE telegram_id = $1 AND main_role = 'manager'
+        `;
+        const result = await pool.query(query, [telegramId]);
+        const user = result.rows[0];
+        // Обязательные поля: username, specialization, experience, profile_completed = true
+        // skills и contacts могут быть пустыми (пользователь мог их пропустить)
+        return !!(user && user.username && user.specialization && user.experience && user.profile_completed);
+    }
+
+    /**
+     * Устанавливает флаг завершения профиля менеджера
+     * @param {string|number} telegramId
+     */
+    static async setManagerProfileCompleted(telegramId) {
+        const query = "UPDATE users SET profile_completed = true WHERE telegram_id = $1 AND main_role = 'manager'";
+        await pool.query(query, [telegramId]);
     }
 }
 

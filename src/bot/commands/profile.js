@@ -40,6 +40,7 @@ const NAVIGATION_STEPS = {
     CONTACTS: 'contacts'
 };
 
+
 // Создаем клавиатуры
 function createSpecializationKeyboard() {
     const buttons = MANAGER_SPECIALIZATIONS.map(spec => [Markup.button.callback(spec, `spec_${spec}`)]);
@@ -120,38 +121,28 @@ function createSkillsKeyboardWithSelected(selectedSkills) {
 
 // Обработчики команд
 async function handleProfileCommand(ctx) {
+    ctx.session = ctx.session || {};
+    ctx.session.executorProfile = ctx.session.executorProfile || { step: 'specialization', data: {} };
+    
+
     const user = await User.findByTelegramId(ctx.from.id);
     
     if (!user) {
         return ctx.reply('Пользователь не найден. Пожалуйста, начните с /start');
     }
     
-    if (user.main_role !== 'manager') {
-        return ctx.reply('Эта команда доступна только менеджерам.');
+    if (user.main_role === 'manager') {
+        // ... существующая логика для менеджера ...
+        return;
     }
     
-    const userId = ctx.from.id;
-    
-    // Инициализируем сессию для предотвращения ошибок
-    if (!ctx.session) {
-        ctx.session = {};
+    if (user.main_role === 'executor') {
+        // Показываем меню быстрого редактирования
+        await showEditProfileMenu(ctx, user);
+        return;
     }
     
-    // Инициализируем отслеживание пропущенных шагов
-    if (!ctx.session.skippedSteps) {
-        ctx.session.skippedSteps = {};
-    }
-    
-    // Очищаем предыдущие данные профиля и навигации
-    profileData.delete(userId);
-    profileNavigation.delete(userId);
-    
-    // Инициализируем данные профиля и навигацию
-    profileData.set(userId, {});
-    setCurrentStep(userId, NAVIGATION_STEPS.SPECIALIZATION);
-    
-    // Показываем первый шаг
-    await showCurrentStep(ctx, NAVIGATION_STEPS.SPECIALIZATION);
+    return ctx.reply('Эта команда доступна только менеджерам и исполнителям.');
 }
 
 // Обработчики кнопок
@@ -476,6 +467,9 @@ async function saveProfile(ctx) {
         // Сохраняем данные в базу
         await User.updateManagerProfile(userId, data);
         
+        // Устанавливаем флаг завершения профиля менеджера
+        await User.setManagerProfileCompleted(userId);
+        
         // Очищаем данные сессии
         profileData.delete(userId);
         profileNavigation.delete(userId);
@@ -492,8 +486,24 @@ async function saveProfile(ctx) {
         // Показываем финальный профиль
         const finalProfile = formatFinalProfile(data);
         await ctx.reply(
-            `✅ <b>Профиль успешно сохранен!</b>\n\n${finalProfile}`,
+            `✅ <b>Профиль менеджера успешно сохранен!</b>\n\n${finalProfile}`,
             { parse_mode: 'HTML' }
+        );
+        
+        // Обновляем клавиатуру пользователя с полным функционалом менеджера
+        const { getKeyboardByRole } = require('../keyboards');
+        await ctx.reply(
+            '🎉 <b>Теперь вам доступны все функции менеджера!</b>\n\n' +
+            'Вы можете:\n' +
+            '• Просматривать доступные проекты\n' +
+            '• Управлять проектами\n' +
+            '• Искать исполнителей\n' +
+            '• Вести статистику\n\n' +
+            'Главное меню менеджера:',
+            {
+                parse_mode: 'HTML',
+                reply_markup: getKeyboardByRole('manager', true).reply_markup
+            }
         );
         
     } catch (error) {
@@ -581,9 +591,9 @@ async function handleTextInput(ctx) {
     
     // Обработка ввода достижений
     if (session.profileState === PROFILE_STATES.ACHIEVEMENTS && session.waitingForAchievementsInput) {
-        const validation = validateProfileField('experience', text); // используем те же лимиты
+        const validation = validateProfileField('achievements', text);
         if (!validation.isValid) {
-            const counter = formatFieldCounter('experience', text);
+            const counter = formatFieldCounter('achievements', text);
             await ctx.reply(`${validation.error}${counter}\n\nВведите достижения еще раз:`);
             return true;
         }
@@ -668,15 +678,11 @@ function goToNextStep(userId) {
     const currentStep = getCurrentStep(userId);
     const currentIndex = steps.indexOf(currentStep);
     
-    console.log('goToNextStep - Current step:', currentStep, 'Index:', currentIndex);
-    
     if (currentIndex < steps.length - 1) {
         const nextStep = steps[currentIndex + 1];
         setCurrentStep(userId, nextStep);
-        console.log('goToNextStep - Setting next step:', nextStep);
         return nextStep;
     }
-    console.log('goToNextStep - No next step available');
     return null;
 }
 
@@ -871,8 +877,9 @@ async function handleFillContacts(ctx) {
 
 // --- Новый двухуровневый интерфейс редактирования профиля ---
 
-// Главное меню выбора режима редактирования
-async function showEditProfileMenu(ctx) {
+// Главное меню выбора режима редактирования (универсально для менеджера и исполнителя)
+async function showEditProfileMenu(ctx, user) {
+    const isExecutor = user.main_role === 'executor';
     await ctx.reply(
         '✏️ <b>Выберите тип редактирования:</b>',
         {
@@ -886,56 +893,86 @@ async function showEditProfileMenu(ctx) {
             }
         }
     );
+    ctx.session = ctx.session || {};
+    ctx.session.editProfileUserType = isExecutor ? 'executor' : 'manager';
 }
 
-// Показываем список полей для редактирования одного поля
+// Показываем список полей для редактирования одного поля (универсально)
 async function showEditFieldList(ctx, user) {
     let skills = user.skills;
     if (Array.isArray(skills)) skills = skills.join(', ');
     if (!skills) skills = '';
-    await ctx.reply(
-        `<b>Ваш профиль:</b>\n\n` +
-        `1. Специализация: <b>${user.specialization || '—'}</b>\n` +
-        `2. Опыт: <b>${user.experience || '—'}</b>\n` +
-        `3. Навыки: <b>${skills || '—'}</b>\n` +
-        `4. Зарплата: <b>${user.salary_range || '—'}</b>\n` +
-        `5. Контакты: <b>${user.contacts || '—'}</b>\n` +
-        `\nВведите номер поля для изменения (1-5):`,
-        { parse_mode: 'HTML' }
-    );
+    const isExecutor = ctx.session.editProfileUserType === 'executor';
+    let text = `<b>Ваш профиль:</b>\n\n`;
+    let fields = [];
+    if (isExecutor) {
+        fields = [
+            `1. Сфера деятельности: <b>${user.specialization || '—'}</b>`,
+            `2. Навыки: <b>${skills || '—'}</b>`,
+            `3. Контакты: <b>${user.contacts || '—'}</b>`,
+            `4. О себе: <b>${user.achievements || '—'}</b>`
+        ];
+        text += fields.join('\n');
+        text += '\n\nВведите номер поля для изменения (1-4):';
+    } else {
+        fields = [
+            `1. Специализация: <b>${user.specialization || '—'}</b>`,
+            `2. Опыт: <b>${user.experience || '—'}</b>`,
+            `3. Навыки: <b>${skills || '—'}</b>`,
+            `4. Зарплата: <b>${user.salary_range || '—'}</b>`,
+            `5. Контакты: <b>${user.contacts || '—'}</b>`
+        ];
+        text += fields.join('\n');
+        text += '\n\nВведите номер поля для изменения (1-5):';
+    }
+    await ctx.reply(text, { parse_mode: 'HTML' });
     ctx.session = ctx.session || {};
     ctx.session.editProfileMode = 'one_field';
 }
 
-// Обработка выбора поля для редактирования
+// Обработка выбора поля для редактирования (универсально)
 async function handleEditFieldInput(ctx, user) {
     const num = (ctx.message.text || '').trim();
     ctx.session = ctx.session || {};
     let field = null;
-    if (num === '1') field = 'specialization';
-    if (num === '2') field = 'experience';
-    if (num === '3') field = 'skills';
-    if (num === '4') field = 'salary_range';
-    if (num === '5') field = 'contacts';
-    if (!field) {
-        await ctx.reply('❌ Введите номер поля от 1 до 5.');
-        return;
+    const isExecutor = ctx.session.editProfileUserType === 'executor';
+    if (isExecutor) {
+        if (num === '1') field = 'specialization';
+        if (num === '2') field = 'skills';
+        if (num === '3') field = 'contacts';
+        if (num === '4') field = 'achievements';
+        if (!field) {
+            await ctx.reply('❌ Введите номер поля от 1 до 4.');
+            return;
+        }
+    } else {
+        if (num === '1') field = 'specialization';
+        if (num === '2') field = 'experience';
+        if (num === '3') field = 'skills';
+        if (num === '4') field = 'salary_range';
+        if (num === '5') field = 'contacts';
+        if (!field) {
+            await ctx.reply('❌ Введите номер поля от 1 до 5.');
+            return;
+        }
     }
     ctx.session.editProfileField = field;
     // Запрашиваем новое значение
     let prompt = '';
-    if (field === 'specialization') prompt = 'Введите новую специализацию:';
-    if (field === 'experience') prompt = 'Введите новый опыт:';
+    if (field === 'specialization') prompt = 'Введите новую сферу деятельности:';
     if (field === 'skills') prompt = 'Введите новые навыки через запятую:';
-    if (field === 'salary_range') prompt = 'Введите новую зарплату:';
     if (field === 'contacts') prompt = 'Введите новые контакты:';
+    if (field === 'achievements') prompt = 'Введите новое описание о себе:';
+    if (field === 'experience') prompt = 'Введите новый опыт:';
+    if (field === 'salary_range') prompt = 'Введите новую зарплату:';
     await ctx.reply(prompt);
 }
 
-// Обработка ввода нового значения для выбранного поля
+// Обработка ввода нового значения для выбранного поля (универсально)
 async function handleEditFieldValue(ctx, user) {
     const field = ctx.session.editProfileField;
     let value = ctx.message.text.trim();
+    const isExecutor = ctx.session.editProfileUserType === 'executor';
     
     // Валидация поля
     const validation = validateProfileField(field, value);
@@ -949,10 +986,171 @@ async function handleEditFieldValue(ctx, user) {
         value = value.split(',').map(s => s.trim()).filter(Boolean);
     }
     
-    await User.updateProfileField(user.telegram_id, field, value);
+    // Используем разные методы для исполнителей и менеджеров
+    if (isExecutor) {
+        await User.updateExecutorProfileField(user.telegram_id, field, value);
+        // --- ДОБАВЛЕНО: автоустановка username, если его нет ---
+        if (!user.username && ctx.from.username) {
+            await User.updateExecutorProfileField(user.telegram_id, 'username', ctx.from.username);
+        }
+        // ---
+        // После любого успешного редактирования поля — если профиль заполнен, выставляем profile_completed
+        const isComplete = await User.isExecutorProfileFullyComplete(user.telegram_id);
+        if (isComplete) {
+            await User.setExecutorProfileCompleted(user.telegram_id);
+        }
+    } else {
+        await User.updateProfileField(user.telegram_id, field, value);
+    }
+    
     await ctx.reply('✅ Профиль обновлен!');
     ctx.session.editProfileMode = null;
     ctx.session.editProfileField = null;
+}
+
+// Новый обработчик для пошагового заполнения профиля исполнителя
+async function handleExecutorProfileStep(ctx) {
+    if (!ctx.session.executorProfile) return;
+    const { step, data } = ctx.session.executorProfile;
+    const text = ctx.message?.text;
+    if (step === 'specialization') {
+        if (!text || !text.trim()) {
+            return ctx.reply('Пожалуйста, введите или выберите сферу деятельности.');
+        }
+        data.specialization = text.trim();
+        ctx.session.executorProfile.step = 'skills';
+        await ctx.reply('Укажите навыки (через запятую) или пропустите этот шаг, отправив "-".');
+        return;
+    }
+    if (step === 'skills') {
+        if (text && text.trim() !== '-') {
+            data.skills = text.split(',').map(s => s.trim()).filter(Boolean);
+        } else {
+            data.skills = [];
+        }
+        ctx.session.executorProfile.step = 'contacts';
+        await ctx.reply('Укажите контакты (email, Telegram, другое) или пропустите этот шаг, отправив "-".');
+        return;
+    }
+    if (step === 'contacts') {
+        if (text && text.trim() !== '-') {
+            data.contacts = text.trim();
+        } else {
+            data.contacts = null;
+        }
+        ctx.session.executorProfile.step = 'about';
+        await ctx.reply('Расскажите о себе (кратко) или пропустите этот шаг, отправив "-".');
+        return;
+    }
+    if (step === 'about') {
+        if (text && text.trim() !== '-') {
+            data.achievements = text.trim();
+        } else {
+            data.achievements = null;
+        }
+        // Сохраняем профиль
+        await User.updateExecutorProfile(ctx.from.id, data);
+        // --- ДОБАВЛЕНО: автоустановка username, если его нет ---
+        const user = await User.findByTelegramId(ctx.from.id);
+        if (user && !user.username && ctx.from.username) {
+            await User.updateExecutorProfileField(ctx.from.id, 'username', ctx.from.username);
+        }
+        // ---
+        await User.setExecutorProfileCompleted(ctx.from.id);
+        ctx.session.executorProfile = null;
+        // Обновляем клавиатуру пользователя с полным функционалом исполнителя
+        const { getKeyboardByRole } = require('../keyboards');
+        // Отправляем сообщение об успехе с новой клавиатурой
+        await ctx.reply(
+            '✅ Профиль заполнен! Теперь вы можете откликаться на проекты. 🚀\n\nВам доступен весь функционал исполнителя:',
+            {
+                reply_markup: getKeyboardByRole('executor', await User.isExecutorProfileFullyComplete(ctx.from.id)).reply_markup
+            }
+        );
+        // Дополнительно отправляем обновленное меню
+        await ctx.reply(
+            '🎯 Главное меню исполнителя:',
+            {
+                reply_markup: getKeyboardByRole('executor', await User.isExecutorProfileFullyComplete(ctx.from.id)).reply_markup
+            }
+        );
+        return;
+    }
+}
+
+// Новый обработчик для /fill_profile
+async function handleFillProfileCommand(ctx) {
+    ctx.session = ctx.session || {};
+    const user = await User.findByTelegramId(ctx.from.id);
+    if (!user) {
+        return ctx.reply('Пользователь не найден. Пожалуйста, начните с /start');
+    }
+    
+    if (user.main_role === 'executor') {
+        // Проверяем, заполнен ли уже профиль
+        const isComplete = await User.isExecutorProfileFullyComplete(ctx.from.id);
+        if (isComplete) {
+            // Если профиль заполнен, просто сообщаем об этом
+            return ctx.reply('✅ Ваш профиль уже заполнен. Используйте "✏️ Редактировать профиль" для изменения данных.');
+        }
+        // Если профиль не заполнен, продолжаем с места остановки
+        if (ctx.session.executorProfile && ctx.session.executorProfile.step) {
+            // Продолжаем с текущего шага
+            await handleExecutorProfileStep(ctx);
+            return;
+        }
+        // Запускаем заполнение профиля с начала
+        ctx.session.executorProfile = { step: 'specialization', data: {} };
+        await ctx.reply('Заполните профиль исполнителя!\n\nСфера деятельности (обязательно):\nНапишите вашу специализацию или выберите из списка.', {
+            reply_markup: {
+                keyboard: [["IT"], ["Дизайн"], ["Маркетинг"], ["Строительство"], ["Другое"]],
+                resize_keyboard: true,
+                one_time_keyboard: true
+            }
+        });
+        return;
+    } else if (user.main_role === 'manager') {
+        // Проверяем, заполнен ли уже профиль менеджера
+        const isComplete = await User.isManagerProfileFullyComplete(ctx.from.id);
+        if (isComplete) {
+            // Если профиль заполнен, просто сообщаем об этом
+            return ctx.reply('✅ Ваш профиль менеджера уже заполнен. Используйте "✏️ Редактировать профиль" для изменения данных.');
+        }
+        
+        // Запускаем заполнение профиля менеджера
+        const userId = ctx.from.id;
+        profileData.set(userId, {});
+        setCurrentStep(userId, NAVIGATION_STEPS.SPECIALIZATION);
+        await showCurrentStep(ctx, NAVIGATION_STEPS.SPECIALIZATION);
+        return;
+    }
+    
+    return ctx.reply('Команда доступна только для исполнителей и менеджеров.');
+}
+
+// Обработка выбора "Да"/"Нет" после вопроса об изменении профиля
+async function handleFillProfileYes(ctx) {
+    ctx.session = ctx.session || {};
+    ctx.session.executorProfile = { step: 'specialization', data: {} };
+    await ctx.reply('Заполните профиль исполнителя заново!\n\nСфера деятельности (обязательно):\nНапишите вашу специализацию или выберите из списка.', {
+        reply_markup: {
+            keyboard: [["IT"], ["Дизайн"], ["Маркетинг"], ["Строительство"], ["Другое"]],
+            resize_keyboard: true,
+            one_time_keyboard: true
+        }
+    });
+    await ctx.answerCbQuery();
+}
+
+async function handleFillProfileNo(ctx) {
+    ctx.session = ctx.session || {};
+    ctx.session.lastProfileEditDecline = Date.now();
+    // Возвращаем в главное меню исполнителя
+    const { getKeyboardByRole } = require('../keyboards');
+    await ctx.reply('Главное меню исполнителя:', {
+        reply_markup: getKeyboardByRole('executor', await User.isExecutorProfileFullyComplete(ctx.from.id)).reply_markup
+    });
+    await ctx.answerCbQuery();
 }
 
 module.exports = {
@@ -979,5 +1177,9 @@ module.exports = {
     showEditProfileMenu,
     showEditFieldList,
     handleEditFieldInput,
-    handleEditFieldValue
+    handleEditFieldValue,
+    handleExecutorProfileStep,
+    handleFillProfileCommand,
+    handleFillProfileYes,
+    handleFillProfileNo
 };
