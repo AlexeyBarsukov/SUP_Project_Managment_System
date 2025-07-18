@@ -43,6 +43,20 @@ const {
     startEditRole,
     handleRoleEditStep,
     deleteRole,
+    searchExecutors,
+    viewExecutorProfile,
+    inviteExecutor,
+    acceptInvitation,
+    declineInvitation,
+    viewInvitations,
+    acceptInvitations,
+    declineInvitations,
+    confirmAcceptInvitation,
+    confirmDeclineInvitation,
+    addAcceptedToProject,
+    confirmAddToProject,
+    declineAllApplications,
+    removeAllExecutors,
     // Добавьте другие функции по необходимости
 } = require('./bot/commands/projects');
 
@@ -179,10 +193,6 @@ bot.hears('📝 Заполнить профиль', managerOnly, handleFillProfi
 // Команды для редактирования профиля (универсальные)
 bot.hears('✏️ Редактировать профиль', roleCheck(['manager', 'executor']), async (ctx) => {
     await showEditProfileMenu(ctx, ctx.user);
-});
-bot.hears('🔍 Найти исполнителей', managerOnly, async (ctx) => {
-    // TODO: Реализовать поиск исполнителей
-    await ctx.reply('🔍 <b>Поиск исполнителей</b>\n\nФункция в разработке.', { parse_mode: 'HTML' });
 });
 
 // Обработка кнопки "Профиль" с учетом ролей в проектах
@@ -965,17 +975,17 @@ bot.action(/^delete_role_(\d+)$/, deleteRole);
 // Обработка просмотра откликов на проект
 bot.action(/^view_applications_(\d+)$/, viewApplications);
 
-// Обработка принятия отклика
-bot.action(/^accept_application_(\d+)$/, acceptApplication);
+// Обработка принятия отклика (оставлено для совместимости, но не используется)
+// bot.action(/^accept_application_(\d+)$/, acceptApplication);
 
-// Обработка подтверждения принятия отклика
-bot.action(/^confirm_accept_(\d+)$/, confirmAcceptApplication);
+// Обработка подтверждения принятия отклика (оставлено для совместимости, но не используется)
+// bot.action(/^confirm_accept_(\d+)$/, confirmAcceptApplication);
 
-// Обработка отклонения отклика
-bot.action(/^decline_application_(\d+)$/, declineApplication);
+// Обработка отклонения отклика (оставлено для совместимости, но не используется)
+// bot.action(/^decline_application_(\d+)$/, declineApplication);
 
-// Обработка подтверждения отклонения отклика
-bot.action(/^confirm_decline_(\d+)$/, confirmDeclineApplication);
+// Обработка подтверждения отклонения отклика (оставлено для совместимости, но не используется)
+// bot.action(/^confirm_decline_(\d+)$/, confirmDeclineApplication);
 
 // Обработка новых callback'ов для исполнителей
 bot.action('already_accepted', handleAlreadyAccepted);
@@ -986,6 +996,32 @@ bot.action(/^refresh_project_(\d+)$/, handleRefreshProject);
 // Обработка настроек повторных откликов
 bot.action(/^reapply_settings_(\d+)$/, handleReapplySettings);
 bot.action(/^set_reapply_(\d+)_(true|false)$/, handleSetReapply);
+
+// Обработка поиска и приглашения исполнителей
+bot.action(/^search_executors_(\d+)$/, searchExecutors);
+bot.action(/^view_executor_profile_(\d+)_(\d+)$/, viewExecutorProfile);
+bot.action(/^invite_executor_(\d+)_(\d+)_(\d+)$/, inviteExecutor);
+bot.action(/^accept_invitation_(\d+)$/, acceptInvitation);
+bot.action(/^decline_invitation_(\d+)$/, declineInvitation);
+bot.action(/^view_invitations_(\d+)$/, viewInvitations);
+
+// Обработка управления откликами и приглашениями
+bot.action(/^accept_applications_(\d+)$/, acceptApplication);
+bot.action(/^decline_applications_(\d+)$/, declineApplication);
+bot.action(/^accept_invitations_(\d+)$/, acceptInvitations);
+bot.action(/^decline_invitations_(\d+)$/, declineInvitations);
+
+// Обработка подтверждения принятия и отклонения
+bot.action(/^confirm_accept_(\d+)$/, confirmAcceptApplication);
+bot.action(/^confirm_decline_(\d+)$/, confirmDeclineApplication);
+bot.action(/^confirm_accept_invitation_(\d+)$/, confirmAcceptInvitation);
+bot.action(/^confirm_decline_invitation_(\d+)$/, confirmDeclineInvitation);
+
+// Обработка добавления в проект и управления вакансиями
+bot.action(/^add_accepted_to_project_(\d+)$/, addAcceptedToProject);
+bot.action(/^confirm_add_to_project_(\d+)$/, confirmAddToProject);
+bot.action(/^decline_all_applications_(\d+)$/, declineAllApplications);
+bot.action(/^remove_all_executors_(\d+)$/, removeAllExecutors);
 
 // Обработка удаления участника из проекта
 bot.action(/^remove_member_(\d+)_(\d+)$/, async (ctx) => {

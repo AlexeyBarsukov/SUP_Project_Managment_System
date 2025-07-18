@@ -4,22 +4,30 @@ class ExecutorApplication {
     /**
      * Создает новый отклик исполнителя на роль в проекте
      */
-    static async create({ project_id, role_id, executor_id, cover_letter = null }) {
+    static async create({ project_id, role_id, executor_id, cover_letter = null, status = 'pending' }) {
         const query = `
-            INSERT INTO executor_applications (project_id, role_id, executor_id, cover_letter)
-            VALUES ($1, $2, $3, $4)
+            INSERT INTO executor_applications (project_id, role_id, executor_id, cover_letter, status)
+            VALUES ($1, $2, $3, $4, $5)
             ON CONFLICT (project_id, role_id, executor_id) DO UPDATE SET 
                 cover_letter = $4,
+                status = $5,
                 updated_at = CURRENT_TIMESTAMP
             RETURNING *
         `;
         
         try {
-            const result = await pool.query(query, [project_id, role_id, executor_id, cover_letter]);
+            const result = await pool.query(query, [project_id, role_id, executor_id, cover_letter, status]);
             return result.rows[0];
         } catch (error) {
             throw new Error(`Error creating executor application: ${error.message}`);
         }
+    }
+
+    /**
+     * Создает приглашение от менеджера исполнителю
+     */
+    static async createInvitation({ project_id, role_id, executor_id }) {
+        return this.create({ project_id, role_id, executor_id, status: 'invited' });
     }
 
     /**
@@ -108,6 +116,26 @@ class ExecutorApplication {
             return result.rows;
         } catch (error) {
             throw new Error(`Error finding applications by executor: ${error.message}`);
+        }
+    }
+
+    /**
+     * Получает отклик исполнителя на конкретный проект
+     */
+    static async findByProjectAndExecutor(project_id, executor_id) {
+        const query = `
+            SELECT ea.*, pr.role_name, pr.required_skills, pr.salary_range, pr.description
+            FROM executor_applications ea
+            JOIN project_roles pr ON ea.role_id = pr.id
+            WHERE ea.project_id = $1 AND ea.executor_id = $2
+            ORDER BY ea.created_at DESC
+        `;
+        
+        try {
+            const result = await pool.query(query, [project_id, executor_id]);
+            return result.rows[0] || null;
+        } catch (error) {
+            throw new Error(`Error finding application by project and executor: ${error.message}`);
         }
     }
 

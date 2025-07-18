@@ -83,15 +83,15 @@ class Project {
         }
     }
 
-    static async addMember(projectId, userId, role) {
+    static async addMember(projectId, userId, role, roleId = null) {
         const query = `
-            INSERT INTO project_members (project_id, user_id, role)
-            VALUES ($1, $2, $3)
+            INSERT INTO project_members (project_id, user_id, role, role_id)
+            VALUES ($1, $2, $3, $4)
             RETURNING *
         `;
         
         try {
-            const result = await pool.query(query, [projectId, userId, role]);
+            const result = await pool.query(query, [projectId, userId, role, roleId]);
             return result.rows[0];
         } catch (error) {
             // Если пользователь уже есть в проекте, игнорируем ошибку
@@ -102,14 +102,26 @@ class Project {
         }
     }
 
-    static async hasMember(projectId, userId, role) {
-        const query = `
-            SELECT 1 FROM project_members 
-            WHERE project_id = $1 AND user_id = $2 AND role = $3
-        `;
+    static async hasMember(projectId, userId, role, roleId = null) {
+        let query;
+        let params;
+        
+        if (roleId) {
+            query = `
+                SELECT 1 FROM project_members 
+                WHERE project_id = $1 AND user_id = $2 AND role = $3 AND role_id = $4
+            `;
+            params = [projectId, userId, role, roleId];
+        } else {
+            query = `
+                SELECT 1 FROM project_members 
+                WHERE project_id = $1 AND user_id = $2 AND role = $3
+            `;
+            params = [projectId, userId, role];
+        }
         
         try {
-            const result = await pool.query(query, [projectId, userId, role]);
+            const result = await pool.query(query, params);
             return result.rows.length > 0;
         } catch (error) {
             throw new Error(`Error checking project member: ${error.message}`);
@@ -127,9 +139,20 @@ class Project {
         }
     }
 
+    static async removeMemberFromRole(projectId, userId, roleId) {
+        const query = 'DELETE FROM project_members WHERE project_id = $1 AND user_id = $2 AND role_id = $3';
+        
+        try {
+            await pool.query(query, [projectId, userId, roleId]);
+            return true;
+        } catch (error) {
+            throw new Error(`Error removing project member from role: ${error.message}`);
+        }
+    }
+
     static async getMembers(projectId) {
         const query = `
-            SELECT u.*, pm.role as member_role, pm.joined_at
+            SELECT u.*, pm.role as member_role, pm.role_id, pm.joined_at
             FROM project_members pm
             JOIN users u ON pm.user_id = u.id
             WHERE pm.project_id = $1

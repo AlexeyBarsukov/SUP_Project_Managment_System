@@ -493,6 +493,16 @@ const projectDetails = async (ctx) => {
                         { text: '📋 Просмотр откликов', callback_data: `view_applications_${project.id}` }
                     ]);
                     
+                    // Добавляем кнопку поиска исполнителей (только если есть свободные позиции)
+                    const hasAvailablePositions = projectRoles.some(role => 
+                        role.positions_count > role.filled_positions
+                    );
+                    if (hasAvailablePositions) {
+                        managerButtons.push([
+                            { text: '🔍 Искать исполнителей', callback_data: `search_executors_${project.id}` }
+                        ]);
+                    }
+                    
                     // Добавляем кнопку настроек повторных откликов
                     managerButtons.push([
                         { text: '⚙️ Настройки повторных откликов', callback_data: `reapply_settings_${project.id}` }
@@ -572,6 +582,16 @@ const projectDetails = async (ctx) => {
                 managerButtons.push([
                     { text: '📋 Просмотр откликов', callback_data: `view_applications_${project.id}` }
                 ]);
+                
+                // Добавляем кнопку поиска исполнителей (только если есть свободные позиции)
+                const hasAvailablePositions = projectRoles.some(role => 
+                    role.positions_count > role.filled_positions
+                );
+                if (hasAvailablePositions) {
+                    managerButtons.push([
+                        { text: '🔍 Искать исполнителей', callback_data: `search_executors_${project.id}` }
+                    ]);
+                }
                 
                 // Добавляем кнопку настроек повторных откликов
                 managerButtons.push([
@@ -688,45 +708,6 @@ const handleCreateProjectStep = async (ctx) => {
                 return ctx.reply(`❌ ${validation.error}\nПопробуйте снова:`, cancelKeyboard);
             }
             state.data.description = description;
-            state.step = 'add_executors';
-            return ctx.reply('Добавить исполнителей? (Да/Нет)', { ...confirmationKeyboard, ...cancelKeyboard });
-        }
-        case 'add_executors': {
-            const answer = ctx.message.text.toLowerCase();
-            if (answer === 'да' || answer === 'yes') {
-                const executors = await User.findVisibleByRole('executor');
-                if (!executors || executors.length === 0) {
-                    await ctx.reply(
-                        'В системе пока нет доступных исполнителей с открытым профилем.\n' +
-                        'Вы сможете добавить их позже через редактирование проекта.',
-                        cancelKeyboard
-                    );
-                    state.data.executors = [];
-                    state.step = 'add_manager';
-                    return ctx.reply('Добавить дополнительного менеджера? (Да/Нет)', { ...confirmationKeyboard, ...cancelKeyboard });
-                } else {
-                    let list = 'Список доступных исполнителей:\n';
-                    for (const e of executors) {
-                        list += `• @${e.username} — ${e.first_name || ''} ${e.last_name || ''}\n`;
-                    }
-                    list += '\nВведите username исполнителя через @ (или несколько через пробел, максимум 10):';
-                    state.data.executors = [];
-                    state.step = 'executors_input';
-                    return ctx.reply(list, cancelKeyboard);
-                }
-            } else if (answer === 'нет' || answer === 'no') {
-                state.step = 'add_manager';
-                return ctx.reply('Добавить дополнительного менеджера? (Да/Нет)', { ...confirmationKeyboard, ...cancelKeyboard });
-            } else {
-                return ctx.reply('Пожалуйста, ответьте "Да" или "Нет".', cancelKeyboard);
-            }
-        }
-        case 'executors_input': {
-            const usernames = ctx.message.text.split(/\s+/).filter(u => u.startsWith('@'));
-            if (usernames.length === 0 || usernames.length > 10) {
-                return ctx.reply('❌ Введите от 1 до 10 username через @, разделяя пробелом.', cancelKeyboard);
-            }
-            state.data.executors = usernames;
             state.step = 'add_manager';
             return ctx.reply('Добавить дополнительного менеджера? (Да/Нет)', { ...confirmationKeyboard, ...cancelKeyboard });
         }
@@ -877,9 +858,6 @@ async function showProjectSummary(ctx) {
     if (d.manager_requirements) summary += `Требования к менеджеру: ${d.manager_requirements}\n`;
     if (d.work_conditions) summary += `Условия работы: ${d.work_conditions}\n`;
     if (d.additional_notes) summary += `Доп. пожелания: ${d.additional_notes}\n`;
-    if (d.executors && d.executors.length > 0) {
-        summary += `Исполнители: ${d.executors.join(', ')}\n`;
-    }
     if (d.manager) {
         summary += `Доп. менеджер: ${d.manager}\n`;
     }
@@ -887,27 +865,7 @@ async function showProjectSummary(ctx) {
     await ctx.reply(summary, { parse_mode: 'HTML' });
 }
 
-async function processUsers(usernames, role, projectId, ctx) {
-    for (const username of usernames) {
-        try {
-            const cleanUsername = username.replace(/^@/, '');
-            const user = await User.findByUsername(cleanUsername);
-            if (user) {
-                // Не добавлять самого себя как менеджера второй раз
-                if (role === 'manager' && user.id === (ctx.user.id || ctx.user.telegram_id)) continue;
-                await Project.addUserToProjectRoles(user.id, projectId, role);
-            } else {
-                await ctx.reply(`⚠️ Пользователь ${username} не найден`);
-            }
-        } catch (error) {
-            console.error(`Error adding ${role} ${username}:`, error);
-        }
-    }
-    // После добавления исполнителей — проверяем, можно ли активировать проект
-    if (role === 'executor') {
-        await Project.checkAndActivateProject(projectId);
-    }
-}
+
 
 // TODO: Обернуть saveProject в транзакцию для атомарности операций создания проекта и ролей
 async function saveProject(ctx) {
@@ -927,11 +885,6 @@ async function saveProject(ctx) {
         const userId = ctx.user.id || ctx.user.telegram_id || ctx.from.id;
         if (!userId) {
             throw new Error('Не удалось определить ID пользователя');
-        }
-        
-        if (d.executors && d.executors.length > 10) {
-            await ctx.reply('❌ Максимум 10 исполнителей.');
-            return;
         }
         
         // Определяем статус проекта
@@ -966,11 +919,6 @@ async function saveProject(ctx) {
         if (!d.manager) {
             await Project.addUserToProjectRoles(userId, project.id, 'manager');
             await ProjectManager.create({ project_id: project.id, manager_id: userId, status: 'accepted' });
-        }
-        
-        // Обработка исполнителей
-        if (d.executors?.length > 0) {
-            await processUsers(d.executors, 'executor', project.id, ctx);
         }
         
         // Обработка менеджера
@@ -1474,7 +1422,7 @@ const showProjectForExecutor = async (ctx) => {
                 const availablePositions = role.positions_count - role.filled_positions;
                 if (availablePositions > 0) {
                     message += `\n🔹 <b>${role.role_name}</b>\n`;
-                    message += `   📊 Открытых позиций: ${availablePositions}/${role.positions_count}\n`;
+                    message += `   📊 Позиций: ${role.filled_positions}/${role.positions_count} (доступно: ${availablePositions})\n`;
                     if (role.required_skills) {
                         message += `   🛠 Требуемые навыки: ${role.required_skills}\n`;
                     }
@@ -1634,7 +1582,7 @@ const handleExecutorApplication = async (ctx) => {
         for (const role of rolesWithPositions) {
             const availablePositions = role.positions_count - role.filled_positions;
             message += `🔹 <b>${role.role_name}</b>\n`;
-            message += `   📊 Доступно позиций: ${availablePositions}/${role.positions_count}\n`;
+            message += `   📊 Позиций: ${role.filled_positions}/${role.positions_count} (доступно: ${availablePositions})\n`;
             if (role.required_skills) {
                 message += `   🛠 Требуемые навыки: ${role.required_skills}\n`;
             }
@@ -1857,23 +1805,27 @@ const viewApplications = async (ctx) => {
             return;
         }
 
-        // Группируем отклики по статусам
-        const pendingApps = applications.filter(app => app.status === 'pending');
+        // Разделяем отклики на добровольные (pending) и приглашения (invited)
+        const voluntaryApps = applications.filter(app => app.status === 'pending');
+        const invitedApps = applications.filter(app => app.status === 'invited');
         const acceptedApps = applications.filter(app => app.status === 'accepted');
         const declinedApps = applications.filter(app => app.status === 'declined');
+        
+
 
         let message = `📋 <b>Отклики на проект "${project.name}"</b>\n\n`;
         
         // Показываем статистику
         message += `📊 <b>Статистика:</b>\n`;
-        message += `⏳ Ожидают рассмотрения: ${pendingApps.length}\n`;
+        message += `⏳ Добровольные отклики: ${voluntaryApps.length}\n`;
+        message += `📤 Направленные приглашения: ${invitedApps.length}\n`;
         message += `✅ Приняты: ${acceptedApps.length}\n`;
         message += `❌ Отклонены: ${declinedApps.length}\n\n`;
 
-        // Показываем ожидающие отклики
-        if (pendingApps.length > 0) {
-            message += `⏳ <b>Ожидают рассмотрения:</b>\n`;
-            for (const app of pendingApps) {
+        // Показываем добровольные отклики
+        if (voluntaryApps.length > 0) {
+            message += `⏳ <b>Добровольные отклики:</b>\n`;
+            for (const app of voluntaryApps) {
                 const executorName = app.username ? `@${app.username}` : `${app.first_name} ${app.last_name || ''}`;
                 message += `\n👤 <b>${executorName}</b>\n`;
                 message += `   🎯 Роль: ${app.role_name}\n`;
@@ -1892,13 +1844,30 @@ const viewApplications = async (ctx) => {
             }
         }
 
-        // Формируем кнопки для управления откликами
+        // Формируем кнопки
         const buttons = [];
         
-        if (pendingApps.length > 0) {
+        // Кнопки для управления откликами
+        if (voluntaryApps.length > 0) {
             buttons.push([
-                { text: '✅ Принять отклик', callback_data: `accept_application_${projectId}` },
-                { text: '❌ Отклонить отклик', callback_data: `decline_application_${projectId}` }
+                { text: '✅ Принять исполнителей', callback_data: `accept_applications_${projectId}` }
+            ]);
+            buttons.push([
+                { text: '❌ Отклонить исполнителей', callback_data: `decline_applications_${projectId}` }
+            ]);
+        }
+        
+        // Кнопка для просмотра направленных приглашений
+        if (invitedApps.length > 0) {
+            buttons.push([
+                { text: '📤 Направленные приглашения', callback_data: `view_invitations_${projectId}` }
+            ]);
+        }
+        
+        // Кнопка для просмотра принятых приглашений (которые можно добавить в проект)
+        if (acceptedApps.length > 0) {
+            buttons.push([
+                { text: '✅ Добавить в проект', callback_data: `add_accepted_to_project_${projectId}` }
             ]);
         }
         
@@ -2353,10 +2322,9 @@ const editVacancies = async (ctx) => {
         
         const roleButtons = [];
         for (const role of roles) {
-            const availablePositions = role.positions_count - role.filled_positions;
             roleButtons.push([
                 { 
-                    text: `✏️ ${role.role_name} (${availablePositions}/${role.positions_count})`, 
+                    text: `✏️ ${role.role_name} (${role.filled_positions}/${role.positions_count})`, 
                     callback_data: `edit_role_${role.id}` 
                 }
             ]);
@@ -2666,12 +2634,10 @@ const showRoleEditMenu = async (ctx) => {
             return;
         }
 
-        const availablePositions = role.positions_count - role.filled_positions;
-        
         let message = `✏️ <b>Редактирование вакансии</b>\n\n`;
         message += `🔹 <b>Роль:</b> ${role.role_name}\n`;
         message += `🔹 <b>Навыки:</b> ${role.required_skills || 'Не указаны'}\n`;
-        message += `🔹 <b>Позиций:</b> ${availablePositions}/${role.positions_count}\n`;
+        message += `🔹 <b>Позиций:</b> ${role.filled_positions}/${role.positions_count}\n`;
         message += `🔹 <b>Зарплата:</b> ${role.salary_range || 'Не указана'}\n`;
         message += `🔹 <b>Описание:</b> ${role.description || 'Не указано'}\n\n`;
         message += `Выберите поле для редактирования:`;
@@ -2857,7 +2823,7 @@ const handleRoleEditStep = async (ctx) => {
             `✅ <b>Вакансия обновлена!</b>\n\n` +
             `🔹 <b>Роль:</b> ${updatedRole.role_name}\n` +
             `🔹 <b>Навыки:</b> ${updatedRole.required_skills || 'Не указаны'}\n` +
-            `🔹 <b>Позиций:</b> ${updatedRole.positions_count - updatedRole.filled_positions}/${updatedRole.positions_count}\n` +
+            `🔹 <b>Позиций:</b> ${updatedRole.filled_positions}/${updatedRole.positions_count}\n` +
             `🔹 <b>Зарплата:</b> ${updatedRole.salary_range || 'Не указана'}\n` +
             `🔹 <b>Описание:</b> ${updatedRole.description || 'Не указано'}`,
             { 
@@ -2900,14 +2866,74 @@ const deleteRole = async (ctx) => {
         // Проверяем, есть ли активные заявки на эту вакансию
         const ExecutorApplication = require('../../db/models/ExecutorApplication');
         const applications = await ExecutorApplication.findByRole(roleId);
-        const activeApplications = applications.filter(app => app.status === 'pending' || app.status === 'accepted');
+        const activeApplications = applications.filter(app => app.status === 'pending' || app.status === 'invited');
+        const acceptedApplications = applications.filter(app => app.status === 'accepted');
         
-        if (activeApplications.length > 0) {
-            await ctx.answerCbQuery('❌ Нельзя удалить вакансию с активными заявками');
+        // Проверяем, есть ли назначенные исполнители на эту роль
+        const projectMembers = await Project.getMembers(role.project_id);
+        const roleExecutors = projectMembers.filter(member => 
+            member.member_role === 'executor' && member.role_id === roleId
+        );
+
+        // Если есть активные отклики или назначенные исполнители, показываем предупреждение
+        if (activeApplications.length > 0 || roleExecutors.length > 0) {
+            let message = `⚠️ <b>Невозможно удалить вакансию</b>\n\n`;
+            message += `Роль: <b>${role.role_name}</b>\n`;
+            message += `Проект: <b>${project.name}</b>\n\n`;
+            
+            if (activeApplications.length > 0) {
+                message += `📋 <b>Активные отклики:</b> ${activeApplications.length}\n`;
+                message += `• Добровольные отклики: ${activeApplications.filter(app => app.status === 'pending').length}\n`;
+                message += `• Направленные приглашения: ${activeApplications.filter(app => app.status === 'invited').length}\n\n`;
+            }
+            
+            if (roleExecutors.length > 0) {
+                message += `👥 <b>Назначенные исполнители:</b> ${roleExecutors.length}\n`;
+                for (const executor of roleExecutors) {
+                    const executorName = executor.username ? `@${executor.username}` : `${executor.first_name} ${executor.last_name || ''}`;
+                    message += `• ${executorName}\n`;
+                }
+                message += `\n`;
+            }
+            
+            message += `Для удаления вакансии необходимо:\n`;
+            if (activeApplications.length > 0) {
+                message += `1. Отклонить все активные отклики\n`;
+            }
+            if (roleExecutors.length > 0) {
+                message += `2. Исключить всех назначенных исполнителей\n`;
+            }
+
+            const buttons = [];
+            
+            if (activeApplications.length > 0) {
+                buttons.push([
+                    { text: '❌ Отклонить все отклики', callback_data: `decline_all_applications_${roleId}` }
+                ]);
+            }
+            
+            if (roleExecutors.length > 0) {
+                buttons.push([
+                    { text: '👥 Исключить всех исполнителей', callback_data: `remove_all_executors_${roleId}` }
+                ]);
+            }
+            
+            buttons.push([
+                { text: '🔙 Назад', callback_data: `edit_vacancies_${role.project_id}` }
+            ]);
+
+            await ctx.editMessageText(message, {
+                parse_mode: 'HTML',
+                reply_markup: {
+                    inline_keyboard: buttons
+                }
+            });
+
+            await ctx.answerCbQuery();
             return;
         }
 
-        // Удаляем вакансию
+        // Если нет активных откликов и исполнителей, удаляем вакансию
         await ProjectRole.delete(roleId);
 
         await ctx.editMessageText(
@@ -2930,6 +2956,1169 @@ const deleteRole = async (ctx) => {
     } catch (error) {
         console.error('Error in deleteRole:', error);
         await ctx.answerCbQuery('❌ Произошла ошибка при удалении вакансии');
+    }
+};
+
+// Поиск исполнителей для проекта
+const searchExecutors = async (ctx) => {
+    try {
+        const projectId = parseInt(ctx.match[1]);
+        
+        const project = await Project.findById(projectId);
+        if (!project) {
+            await ctx.answerCbQuery('❌ Проект не найден');
+            return;
+        }
+
+        // Проверяем права доступа (только менеджер проекта)
+        const managers = await ProjectManager.findByProject(projectId);
+        const isManager = managers.some(m => m.manager_id === ctx.user.id && m.status === 'accepted');
+        
+        if (!isManager && project.customer_id !== ctx.user.id) {
+            await ctx.answerCbQuery('❌ У вас нет прав для поиска исполнителей');
+            return;
+        }
+
+        // Получаем вакансии с свободными позициями
+        const projectRoles = await ProjectRole.findByProjectId(projectId);
+        const availableRoles = projectRoles.filter(role => 
+            role.positions_count > role.filled_positions
+        );
+        
+        if (availableRoles.length === 0) {
+            await ctx.answerCbQuery('❌ Нет свободных позиций для поиска исполнителей');
+            return;
+        }
+
+        // Получаем всех исполнителей с открытым профилем
+        const executors = await User.findVisibleByRole('executor');
+        if (!executors || executors.length === 0) {
+            await ctx.answerCbQuery('❌ В системе нет доступных исполнителей');
+            return;
+        }
+
+        // Показываем список исполнителей
+        let message = `🔍 <b>Поиск исполнителей для проекта "${project.name}"</b>\n\n`;
+        message += `Найдено ${executors.length} исполнителей с открытым профилем.\n\n`;
+        message += `Выберите исполнителя для просмотра профиля и предложения вакансии:`;
+
+        const executorButtons = [];
+        for (const executor of executors) {
+            executorButtons.push([
+                { 
+                    text: `👤 @${executor.username}`, 
+                    callback_data: `view_executor_profile_${projectId}_${executor.id}` 
+                }
+            ]);
+        }
+
+        executorButtons.push([
+            { text: '🔙 Назад к проекту', callback_data: `project_details_${projectId}` }
+        ]);
+
+        await ctx.editMessageText(message, {
+            parse_mode: 'HTML',
+            reply_markup: {
+                inline_keyboard: executorButtons
+            }
+        });
+
+        await ctx.answerCbQuery();
+
+    } catch (error) {
+        console.error('Error in searchExecutors:', error);
+        await ctx.answerCbQuery('❌ Произошла ошибка при поиске исполнителей');
+    }
+};
+
+// Просмотр профиля исполнителя
+const viewExecutorProfile = async (ctx) => {
+    try {
+        const projectId = parseInt(ctx.match[1]);
+        const executorId = parseInt(ctx.match[2]);
+        
+        const project = await Project.findById(projectId);
+        const executor = await User.findById(executorId);
+        
+        if (!project || !executor) {
+            await ctx.answerCbQuery('❌ Проект или исполнитель не найден');
+            return;
+        }
+
+        // Проверяем права доступа
+        const managers = await ProjectManager.findByProject(projectId);
+        const isManager = managers.some(m => m.manager_id === ctx.user.id && m.status === 'accepted');
+        
+        if (!isManager && project.customer_id !== ctx.user.id) {
+            await ctx.answerCbQuery('❌ У вас нет прав для просмотра профилей исполнителей');
+            return;
+        }
+
+        // Получаем профиль исполнителя
+        const executorProfile = await User.getExecutorProfile(executor.telegram_id);
+        
+        // Получаем доступные вакансии
+        const projectRoles = await ProjectRole.findByProjectId(projectId);
+        const availableRoles = projectRoles.filter(role => 
+            role.positions_count > role.filled_positions
+        );
+
+        let message = `👤 <b>Профиль исполнителя</b>\n\n`;
+        message += `Имя: <b>${executor.first_name} ${executor.last_name || ''}</b>\n`;
+        message += `Username: @${executor.username || 'нет'}\n`;
+        
+        if (executorProfile) {
+            if (executorProfile.specialization) {
+                message += `Специализация: ${executorProfile.specialization}\n`;
+            }
+            if (executorProfile.skills) {
+                let skills = executorProfile.skills;
+                if (Array.isArray(skills)) {
+                    skills = skills.join(', ');
+                }
+                message += `Навыки: ${skills}\n`;
+            }
+            if (executorProfile.contacts) {
+                message += `Контакты: ${executorProfile.contacts}\n`;
+            }
+            if (executorProfile.achievements) {
+                message += `О себе: ${executorProfile.achievements}\n`;
+            }
+        }
+        
+        message += `\n📋 <b>Доступные вакансии в проекте:</b>\n`;
+        for (const role of availableRoles) {
+            const availablePositions = role.positions_count - role.filled_positions;
+            message += `\n🔹 <b>${role.role_name}</b>\n`;
+            message += `   📊 Свободных позиций: ${availablePositions}/${role.positions_count}\n`;
+            if (role.required_skills) {
+                message += `   🛠 Требуемые навыки: ${role.required_skills}\n`;
+            }
+            if (role.salary_range) {
+                message += `   💰 Зарплата: ${role.salary_range}\n`;
+            }
+            if (role.description) {
+                message += `   📝 Описание: ${role.description}\n`;
+            }
+        }
+
+        const roleButtons = availableRoles.map(role => [
+            { 
+                text: `✅ Предложить "${role.role_name}"`, 
+                callback_data: `invite_executor_${projectId}_${executorId}_${role.id}` 
+            }
+        ]);
+
+        roleButtons.push([
+            { text: '🔙 Назад к поиску', callback_data: `search_executors_${projectId}` }
+        ]);
+
+        await ctx.editMessageText(message, {
+            parse_mode: 'HTML',
+            reply_markup: {
+                inline_keyboard: roleButtons
+            }
+        });
+
+        await ctx.answerCbQuery();
+
+    } catch (error) {
+        console.error('Error in viewExecutorProfile:', error);
+        await ctx.answerCbQuery('❌ Произошла ошибка при загрузке профиля');
+    }
+};
+
+// Приглашение исполнителя на вакансию
+const inviteExecutor = async (ctx) => {
+    try {
+        const projectId = parseInt(ctx.match[1]);
+        const executorId = parseInt(ctx.match[2]);
+        const roleId = parseInt(ctx.match[3]);
+        
+        const project = await Project.findById(projectId);
+        const executor = await User.findById(executorId);
+        const role = await ProjectRole.findById(roleId);
+        
+        if (!project || !executor || !role) {
+            await ctx.answerCbQuery('❌ Проект, исполнитель или вакансия не найдены');
+            return;
+        }
+
+        // Проверяем права доступа
+        const managers = await ProjectManager.findByProject(projectId);
+        const isManager = managers.some(m => m.manager_id === ctx.user.id && m.status === 'accepted');
+        
+        if (!isManager && project.customer_id !== ctx.user.id) {
+            await ctx.answerCbQuery('❌ У вас нет прав для приглашения исполнителей');
+            return;
+        }
+
+        // Проверяем, что позиция все еще свободна
+        if (role.filled_positions >= role.positions_count) {
+            await ctx.answerCbQuery('❌ Эта позиция уже занята');
+            return;
+        }
+
+        // Проверяем, что исполнитель не уже приглашен на эту роль
+        const ExecutorApplication = require('../../db/models/ExecutorApplication');
+        const existingApplication = await ExecutorApplication.findByProjectAndExecutor(projectId, executorId);
+        if (existingApplication && existingApplication.role_id === roleId && existingApplication.status === 'invited') {
+            await ctx.answerCbQuery('❌ Этот исполнитель уже приглашен на эту роль');
+            return;
+        }
+
+        // Создаем приглашение
+        const application = await ExecutorApplication.createInvitation({
+            project_id: projectId,
+            role_id: roleId,
+            executor_id: executorId
+        });
+
+        // Отправляем уведомление исполнителю
+        const managerName = ctx.user.first_name + ' ' + (ctx.user.last_name || '');
+        await ctx.telegram.sendMessage(
+            executor.telegram_id,
+            `🎉 <b>Вас пригласили на вакансию!</b>\n\n` +
+            `Проект: <b>${project.name}</b>\n` +
+            `Роль: <b>${role.role_name}</b>\n` +
+            `Менеджер: ${managerName}\n\n` +
+            `Для принятия или отклонения приглашения нажмите кнопку ниже:`,
+            {
+                parse_mode: 'HTML',
+                reply_markup: {
+                    inline_keyboard: [
+                        [
+                            { text: '✅ Принять приглашение', callback_data: `accept_invitation_${application.id}` },
+                            { text: '❌ Отклонить', callback_data: `decline_invitation_${application.id}` }
+                        ]
+                    ]
+                }
+            }
+        );
+
+        await ctx.editMessageText(
+            `✅ <b>Приглашение отправлено!</b>\n\n` +
+            `Исполнитель @${executor.username} получил приглашение на роль "${role.role_name}" в проекте "${project.name}".\n\n` +
+            `Ожидайте ответа от исполнителя.`,
+            {
+                parse_mode: 'HTML',
+                reply_markup: {
+                    inline_keyboard: [
+                        [
+                            { text: '🔙 Назад к поиску', callback_data: `search_executors_${projectId}` }
+                        ]
+                    ]
+                }
+            }
+        );
+
+        await ctx.answerCbQuery('✅ Приглашение отправлено!');
+
+    } catch (error) {
+        console.error('Error in inviteExecutor:', error);
+        await ctx.answerCbQuery('❌ Произошла ошибка при отправке приглашения');
+    }
+};
+
+// Обработка принятия приглашения исполнителем
+const acceptInvitation = async (ctx) => {
+    try {
+        const applicationId = parseInt(ctx.match[1]);
+        
+        const ExecutorApplication = require('../../db/models/ExecutorApplication');
+        const application = await ExecutorApplication.findById(applicationId);
+        
+        if (!application) {
+            await ctx.answerCbQuery('❌ Приглашение не найдено');
+            return;
+        }
+
+        // Проверяем, что это приглашение от менеджера
+        if (application.status !== 'invited') {
+            await ctx.answerCbQuery('❌ Это не приглашение от менеджера');
+            return;
+        }
+
+        // Проверяем, что исполнитель еще не принял другое приглашение на эту роль
+        const role = await ProjectRole.findById(application.role_id);
+        if (role.filled_positions >= role.positions_count) {
+            await ctx.answerCbQuery('❌ Эта позиция уже занята');
+            return;
+        }
+
+        // Принимаем приглашение
+        await ExecutorApplication.updateStatus(applicationId, 'accepted');
+        
+        // Добавляем исполнителя в проект
+        await Project.addUserToProjectRoles(application.executor_id, application.project_id, 'executor');
+        
+        // Автоматически отклоняем все остальные приглашения на эту роль
+        const otherInvitations = await ExecutorApplication.findByRole(application.role_id);
+        const pendingInvitations = otherInvitations.filter(inv => 
+            inv.status === 'invited' && inv.id !== applicationId
+        );
+        
+        for (const invitation of pendingInvitations) {
+            await ExecutorApplication.updateStatus(invitation.id, 'declined');
+            
+            // Уведомляем других кандидатов об отклонении
+            const otherExecutor = await User.findById(invitation.executor_id);
+            if (otherExecutor) {
+                await ctx.telegram.sendMessage(
+                    otherExecutor.telegram_id,
+                    `❌ <b>Приглашение отклонено</b>\n\n` +
+                    `Проект: <b>${project.name}</b>\n` +
+                    `Роль: <b>${role.role_name}</b>\n\n` +
+                    `На эту позицию был выбран другой кандидат.`,
+                    { parse_mode: 'HTML' }
+                );
+            }
+        }
+        
+        // Уведомляем менеджеров проекта
+        const project = await Project.findById(application.project_id);
+        const managers = await ProjectManager.findByProject(application.project_id);
+        const acceptedManagers = managers.filter(m => m.status === 'accepted');
+        
+        for (const manager of acceptedManagers) {
+            const managerUser = await User.findById(manager.manager_id);
+            if (managerUser) {
+                const executor = await User.findById(application.executor_id);
+                await ctx.telegram.sendMessage(
+                    managerUser.telegram_id,
+                    `✅ <b>Исполнитель принял приглашение!</b>\n\n` +
+                    `Проект: <b>${project.name}</b>\n` +
+                    `Роль: <b>${role.role_name}</b>\n` +
+                    `Исполнитель: @${executor.username}\n\n` +
+                    `Исполнитель успешно добавлен в проект.\n` +
+                    `Остальные кандидаты на эту роль автоматически отклонены.`,
+                    { parse_mode: 'HTML' }
+                );
+            }
+        }
+
+        await ctx.editMessageText(
+            `✅ <b>Приглашение принято!</b>\n\n` +
+            `Вы успешно присоединились к проекту "${project.name}" на роль "${role.role_name}".\n\n` +
+            `Менеджер проекта получил уведомление о вашем согласии.`,
+            { parse_mode: 'HTML' }
+        );
+
+        await ctx.answerCbQuery('✅ Приглашение принято!');
+
+    } catch (error) {
+        console.error('Error in acceptInvitation:', error);
+        await ctx.answerCbQuery('❌ Произошла ошибка при принятии приглашения');
+    }
+};
+
+// Обработка отклонения приглашения исполнителем
+const declineInvitation = async (ctx) => {
+    try {
+        const applicationId = parseInt(ctx.match[1]);
+        
+        const ExecutorApplication = require('../../db/models/ExecutorApplication');
+        const application = await ExecutorApplication.findById(applicationId);
+        
+        if (!application) {
+            await ctx.answerCbQuery('❌ Приглашение не найдено');
+            return;
+        }
+
+        // Проверяем, что это приглашение от менеджера
+        if (application.status !== 'invited') {
+            await ctx.answerCbQuery('❌ Это не приглашение от менеджера');
+            return;
+        }
+
+        // Отклоняем приглашение
+        await ExecutorApplication.updateStatus(applicationId, 'declined');
+        
+        // Уведомляем менеджеров проекта
+        const project = await Project.findById(application.project_id);
+        const role = await ProjectRole.findById(application.role_id);
+        const managers = await ProjectManager.findByProject(application.project_id);
+        const acceptedManagers = managers.filter(m => m.status === 'accepted');
+        
+        for (const manager of acceptedManagers) {
+            const managerUser = await User.findById(manager.manager_id);
+            if (managerUser) {
+                const executor = await User.findById(application.executor_id);
+                await ctx.telegram.sendMessage(
+                    managerUser.telegram_id,
+                    `❌ <b>Исполнитель отклонил приглашение</b>\n\n` +
+                    `Проект: <b>${project.name}</b>\n` +
+                    `Роль: <b>${role.role_name}</b>\n` +
+                    `Исполнитель: @${executor.username}\n\n` +
+                    `Позиция остается свободной для других кандидатов.`,
+                    { parse_mode: 'HTML' }
+                );
+            }
+        }
+
+        await ctx.editMessageText(
+            `❌ <b>Приглашение отклонено</b>\n\n` +
+            `Вы отклонили приглашение на роль "${role.role_name}" в проекте "${project.name}".\n\n` +
+            `Менеджер проекта получил уведомление об отказе.`,
+            { parse_mode: 'HTML' }
+        );
+
+        await ctx.answerCbQuery('❌ Приглашение отклонено');
+
+    } catch (error) {
+        console.error('Error in declineInvitation:', error);
+        await ctx.answerCbQuery('❌ Произошла ошибка при отклонении приглашения');
+    }
+};
+
+// Подтверждение принятия приглашения
+const confirmAcceptInvitation = async (ctx) => {
+    try {
+        const applicationId = parseInt(ctx.match[1]);
+        
+        const ExecutorApplication = require('../../db/models/ExecutorApplication');
+        const application = await ExecutorApplication.findById(applicationId);
+        
+        if (!application) {
+            await ctx.answerCbQuery('❌ Приглашение не найдено');
+            return;
+        }
+
+        if (application.status !== 'invited') {
+            await ctx.answerCbQuery('❌ Приглашение уже обработано');
+            return;
+        }
+
+        // Принимаем приглашение (меняем статус на accepted)
+        await ExecutorApplication.updateStatus(applicationId, 'accepted');
+        
+        // Добавляем исполнителя в проект
+        const project = await Project.findById(application.project_id);
+        const hasMember = await Project.hasMember(application.project_id, application.executor_id, 'executor');
+        
+        if (!hasMember) {
+            await Project.addMember(application.project_id, application.executor_id, 'executor', application.role_id);
+        }
+        
+        // Уведомляем исполнителя
+        const executorUser = await User.findById(application.executor_id);
+        if (executorUser) {
+            await ctx.telegram.sendMessage(
+                executorUser.telegram_id,
+                `🎉 <b>Ваше приглашение принято!</b>\n\n` +
+                `Проект: <b>${project.name}</b>\n` +
+                `Роль: <b>${application.role_name}</b>\n\n` +
+                `Поздравляем! Вы были приняты в команду проекта.\n` +
+                `Менеджер проекта свяжется с вами для дальнейших инструкций.`,
+                { parse_mode: 'HTML' }
+            );
+        }
+
+        // Логируем событие
+        await AuditLog.create(
+            ctx.user.id,
+            'INVITATION_ACCEPTED',
+            application.project_id,
+            { 
+                executorId: application.executor_id,
+                executorUsername: executorUser?.username,
+                roleName: application.role_name,
+                applicationId: applicationId
+            }
+        );
+
+        await ctx.editMessageText(
+            `✅ <b>Приглашение принято!</b>\n\n` +
+            `Исполнитель: <b>@${executorUser?.username || executorUser?.first_name}</b>\n` +
+            `Роль: <b>${application.role_name}</b>\n` +
+            `Проект: <b>${project.name}</b>\n\n` +
+            `Исполнитель получил уведомление о принятии.`,
+            { 
+                parse_mode: 'HTML',
+                reply_markup: {
+                    inline_keyboard: [
+                        [
+                            { text: '📤 Направленные приглашения', callback_data: `view_invitations_${application.project_id}` }
+                        ],
+                        [
+                            { text: '🔙 К проекту', callback_data: `project_details_${application.project_id}` }
+                        ]
+                    ]
+                }
+            }
+        );
+
+        await ctx.answerCbQuery('✅ Приглашение успешно принято!');
+
+    } catch (error) {
+        console.error('Error in confirmAcceptInvitation:', error);
+        await ctx.answerCbQuery('❌ Произошла ошибка при принятии приглашения');
+    }
+};
+
+// Подтверждение отклонения приглашения
+const confirmDeclineInvitation = async (ctx) => {
+    try {
+        const applicationId = parseInt(ctx.match[1]);
+        
+        const ExecutorApplication = require('../../db/models/ExecutorApplication');
+        const application = await ExecutorApplication.findById(applicationId);
+        
+        if (!application) {
+            await ctx.answerCbQuery('❌ Приглашение не найдено');
+            return;
+        }
+
+        if (application.status !== 'invited') {
+            await ctx.answerCbQuery('❌ Приглашение уже обработано');
+            return;
+        }
+
+        // Отклоняем приглашение
+        await ExecutorApplication.updateStatus(applicationId, 'declined');
+        
+        // Уведомляем исполнителя
+        const executorUser = await User.findById(application.executor_id);
+        const project = await Project.findById(application.project_id);
+        
+        if (executorUser) {
+            await ctx.telegram.sendMessage(
+                executorUser.telegram_id,
+                `❌ <b>Ваше приглашение отклонено</b>\n\n` +
+                `Проект: <b>${project.name}</b>\n` +
+                `Роль: <b>${application.role_name}</b>\n\n` +
+                `К сожалению, ваше приглашение было отклонено менеджером проекта.`,
+                { parse_mode: 'HTML' }
+            );
+        }
+
+        // Логируем событие
+        await AuditLog.create(
+            ctx.user.id,
+            'INVITATION_DECLINED',
+            application.project_id,
+            { 
+                executorId: application.executor_id,
+                executorUsername: executorUser?.username,
+                roleName: application.role_name,
+                applicationId: applicationId
+            }
+        );
+
+        await ctx.editMessageText(
+            `❌ <b>Приглашение отклонено</b>\n\n` +
+            `Исполнитель: <b>@${executorUser?.username || executorUser?.first_name}</b>\n` +
+            `Роль: <b>${application.role_name}</b>\n` +
+            `Проект: <b>${project.name}</b>\n\n` +
+            `Исполнитель получил уведомление об отклонении.`,
+            { 
+                parse_mode: 'HTML',
+                reply_markup: {
+                    inline_keyboard: [
+                        [
+                            { text: '📤 Направленные приглашения', callback_data: `view_invitations_${application.project_id}` }
+                        ],
+                        [
+                            { text: '🔙 К проекту', callback_data: `project_details_${application.project_id}` }
+                        ]
+                    ]
+                }
+            }
+        );
+
+        await ctx.answerCbQuery('❌ Приглашение отклонено');
+
+    } catch (error) {
+        console.error('Error in confirmDeclineInvitation:', error);
+        await ctx.answerCbQuery('❌ Произошла ошибка при отклонении приглашения');
+    }
+};
+
+// Принятие приглашений
+const acceptInvitations = async (ctx) => {
+    try {
+        const projectId = parseInt(ctx.match[1]);
+        
+        const project = await Project.findById(projectId);
+        if (!project) {
+            await ctx.answerCbQuery('❌ Проект не найден');
+            return;
+        }
+
+        // Проверяем права доступа
+        const managers = await ProjectManager.findByProject(projectId);
+        const isManager = managers.some(m => m.manager_id === ctx.user.id && m.status === 'accepted');
+        
+        if (!isManager && project.customer_id !== ctx.user.id) {
+            await ctx.answerCbQuery('❌ У вас нет прав для принятия приглашений');
+            return;
+        }
+
+        // Получаем направленные приглашения
+        const ExecutorApplication = require('../../db/models/ExecutorApplication');
+        const applications = await ExecutorApplication.findByProject(projectId);
+        const invitedApps = applications.filter(app => app.status === 'invited');
+        
+        if (invitedApps.length === 0) {
+            await ctx.answerCbQuery('❌ Нет активных приглашений');
+            return;
+        }
+
+        // Показываем список приглашений для выбора
+        let message = `✅ <b>Выберите приглашение для принятия:</b>\n\n`;
+        message += `Проект: <b>${project.name}</b>\n\n`;
+        
+        const buttons = [];
+        for (const app of invitedApps) {
+            const executorName = app.username ? `@${app.username}` : `${app.first_name} ${app.last_name || ''}`;
+            message += `👤 <b>${executorName}</b>\n`;
+            message += `   🎯 Роль: ${app.role_name}\n`;
+            message += `   🛠 Специализация: ${app.specialization || 'Не указана'}\n`;
+            message += `   📅 Приглашение отправлено: ${new Date(app.created_at).toLocaleDateString('ru-RU')}\n\n`;
+            
+            buttons.push([
+                { 
+                    text: `✅ Принять ${executorName}`, 
+                    callback_data: `confirm_accept_invitation_${app.id}` 
+                }
+            ]);
+        }
+
+        buttons.push([
+            { text: '🔙 Назад', callback_data: `view_invitations_${projectId}` }
+        ]);
+
+        await ctx.editMessageText(message, {
+            parse_mode: 'HTML',
+            reply_markup: {
+                inline_keyboard: buttons
+            }
+        });
+
+        await ctx.answerCbQuery();
+
+    } catch (error) {
+        console.error('Error in acceptInvitations:', error);
+        await ctx.answerCbQuery('❌ Произошла ошибка');
+    }
+};
+
+// Отклонение приглашений
+const declineInvitations = async (ctx) => {
+    try {
+        const projectId = parseInt(ctx.match[1]);
+        
+        const project = await Project.findById(projectId);
+        if (!project) {
+            await ctx.answerCbQuery('❌ Проект не найден');
+            return;
+        }
+
+        // Проверяем права доступа
+        const managers = await ProjectManager.findByProject(projectId);
+        const isManager = managers.some(m => m.manager_id === ctx.user.id && m.status === 'accepted');
+        
+        if (!isManager && project.customer_id !== ctx.user.id) {
+            await ctx.answerCbQuery('❌ У вас нет прав для отклонения приглашений');
+            return;
+        }
+
+        // Получаем направленные приглашения
+        const ExecutorApplication = require('../../db/models/ExecutorApplication');
+        const applications = await ExecutorApplication.findByProject(projectId);
+        const invitedApps = applications.filter(app => app.status === 'invited');
+        
+        if (invitedApps.length === 0) {
+            await ctx.answerCbQuery('❌ Нет активных приглашений');
+            return;
+        }
+
+        // Показываем список приглашений для выбора
+        let message = `❌ <b>Выберите приглашение для отклонения:</b>\n\n`;
+        message += `Проект: <b>${project.name}</b>\n\n`;
+        
+        const buttons = [];
+        for (const app of invitedApps) {
+            const executorName = app.username ? `@${app.username}` : `${app.first_name} ${app.last_name || ''}`;
+            message += `👤 <b>${executorName}</b>\n`;
+            message += `   🎯 Роль: ${app.role_name}\n`;
+            message += `   🛠 Специализация: ${app.specialization || 'Не указана'}\n`;
+            message += `   📅 Приглашение отправлено: ${new Date(app.created_at).toLocaleDateString('ru-RU')}\n\n`;
+            
+            buttons.push([
+                { 
+                    text: `❌ Отклонить ${executorName}`, 
+                    callback_data: `confirm_decline_invitation_${app.id}` 
+                }
+            ]);
+        }
+
+        buttons.push([
+            { text: '🔙 Назад', callback_data: `view_invitations_${projectId}` }
+        ]);
+
+        await ctx.editMessageText(message, {
+            parse_mode: 'HTML',
+            reply_markup: {
+                inline_keyboard: buttons
+            }
+        });
+
+        await ctx.answerCbQuery();
+
+    } catch (error) {
+        console.error('Error in declineInvitations:', error);
+        await ctx.answerCbQuery('❌ Произошла ошибка');
+    }
+};
+
+// Просмотр направленных приглашений
+const viewInvitations = async (ctx) => {
+    try {
+        const projectId = parseInt(ctx.match[1]);
+        
+        const project = await Project.findById(projectId);
+        if (!project) {
+            await ctx.answerCbQuery('❌ Проект не найден');
+            return;
+        }
+
+        // Проверяем права доступа (только менеджер проекта)
+        const managers = await ProjectManager.findByProject(projectId);
+        const isManager = managers.some(m => m.manager_id === ctx.user.id && m.status === 'accepted');
+        
+        if (!isManager && project.customer_id !== ctx.user.id) {
+            await ctx.answerCbQuery('❌ У вас нет прав для просмотра приглашений');
+            return;
+        }
+
+        // Получаем направленные приглашения
+        const ExecutorApplication = require('../../db/models/ExecutorApplication');
+        const applications = await ExecutorApplication.findByProject(projectId);
+        const invitedApps = applications.filter(app => app.status === 'invited');
+        
+        if (invitedApps.length === 0) {
+            await ctx.editMessageText(
+                `📤 <b>Направленные приглашения</b>\n\n` +
+                `❌ Нет активных приглашений.`,
+                { 
+                    parse_mode: 'HTML',
+                    reply_markup: {
+                        inline_keyboard: [
+                            [
+                                { text: '🔙 Назад к откликам', callback_data: `view_applications_${projectId}` }
+                            ]
+                        ]
+                    }
+                }
+            );
+            return;
+        }
+
+        let message = `📤 <b>Направленные приглашения</b>\n\n`;
+        message += `Проект: <b>${project.name}</b>\n\n`;
+        
+        // Группируем приглашения по ролям
+        const invitationsByRole = {};
+        for (const app of invitedApps) {
+            if (!invitationsByRole[app.role_id]) {
+                invitationsByRole[app.role_id] = [];
+            }
+            invitationsByRole[app.role_id].push(app);
+        }
+
+        for (const [roleId, apps] of Object.entries(invitationsByRole)) {
+            const firstApp = apps[0];
+            message += `🎯 <b>Роль: ${firstApp.role_name}</b>\n`;
+            message += `📊 Приглашено кандидатов: ${apps.length}\n\n`;
+            
+            for (const app of apps) {
+                const executorName = app.username ? `@${app.username}` : `${app.first_name} ${app.last_name || ''}`;
+                message += `👤 <b>${executorName}</b>\n`;
+                message += `   🛠 Специализация: ${app.specialization || 'Не указана'}\n`;
+                if (app.skills) {
+                    let skills = app.skills;
+                    if (Array.isArray(skills)) {
+                        skills = skills.join(', ');
+                    }
+                    message += `   💡 Навыки: ${skills}\n`;
+                }
+                if (app.contacts) {
+                    message += `   📞 Контакты: ${app.contacts}\n`;
+                }
+                message += `   📅 Приглашение отправлено: ${new Date(app.created_at).toLocaleDateString('ru-RU')}\n`;
+                message += `   ⏳ Статус: Ожидает ответа\n\n`;
+            }
+        }
+
+        const buttons = [
+            [
+                { text: '🔙 Назад к откликам', callback_data: `view_applications_${projectId}` }
+            ]
+        ];
+
+        await ctx.editMessageText(message, {
+            parse_mode: 'HTML',
+            reply_markup: {
+                inline_keyboard: buttons
+            }
+        });
+
+        await ctx.answerCbQuery();
+
+    } catch (error) {
+        console.error('Error in viewInvitations:', error);
+        await ctx.answerCbQuery('❌ Произошла ошибка при загрузке приглашений');
+    }
+};
+
+// Добавление принятых приглашений в проект
+const addAcceptedToProject = async (ctx) => {
+    try {
+        const projectId = parseInt(ctx.match[1]);
+        
+        const project = await Project.findById(projectId);
+        if (!project) {
+            await ctx.answerCbQuery('❌ Проект не найден');
+            return;
+        }
+
+        // Проверяем права доступа
+        const managers = await ProjectManager.findByProject(projectId);
+        const isManager = managers.some(m => m.manager_id === ctx.user.id && m.status === 'accepted');
+        
+        if (!isManager && project.customer_id !== ctx.user.id) {
+            await ctx.answerCbQuery('❌ У вас нет прав для добавления исполнителей в проект');
+            return;
+        }
+
+        // Получаем принятые приглашения
+        const ExecutorApplication = require('../../db/models/ExecutorApplication');
+        const applications = await ExecutorApplication.findByProject(projectId);
+        const acceptedApps = applications.filter(app => app.status === 'accepted');
+        
+        if (acceptedApps.length === 0) {
+            await ctx.answerCbQuery('❌ Нет принятых приглашений для добавления в проект');
+            return;
+        }
+
+        // Показываем список принятых приглашений для добавления в проект
+        let message = `✅ <b>Добавление исполнителей в проект:</b>\n\n`;
+        message += `Проект: <b>${project.name}</b>\n\n`;
+        message += `Выберите исполнителей, которых хотите добавить в проект:\n\n`;
+        
+        const buttons = [];
+        for (const app of acceptedApps) {
+            const executorName = app.username ? `@${app.username}` : `${app.first_name} ${app.last_name || ''}`;
+            message += `👤 <b>${executorName}</b>\n`;
+            message += `   🎯 Роль: ${app.role_name}\n`;
+            message += `   🛠 Специализация: ${app.specialization || 'Не указана'}\n`;
+            message += `   📅 Приглашение принято: ${new Date(app.updated_at).toLocaleDateString('ru-RU')}\n\n`;
+            
+            buttons.push([
+                { 
+                    text: `✅ Добавить ${executorName}`, 
+                    callback_data: `confirm_add_to_project_${app.id}` 
+                }
+            ]);
+        }
+
+        buttons.push([
+            { text: '🔙 Назад', callback_data: `view_applications_${projectId}` }
+        ]);
+
+        await ctx.editMessageText(message, {
+            parse_mode: 'HTML',
+            reply_markup: {
+                inline_keyboard: buttons
+            }
+        });
+
+        await ctx.answerCbQuery();
+
+    } catch (error) {
+        console.error('Error in addAcceptedToProject:', error);
+        await ctx.answerCbQuery('❌ Произошла ошибка');
+    }
+};
+
+// Подтверждение добавления исполнителя в проект
+const confirmAddToProject = async (ctx) => {
+    try {
+        const applicationId = parseInt(ctx.match[1]);
+        
+        const ExecutorApplication = require('../../db/models/ExecutorApplication');
+        const application = await ExecutorApplication.findById(applicationId);
+        
+        if (!application) {
+            await ctx.answerCbQuery('❌ Приглашение не найдено');
+            return;
+        }
+
+        if (application.status !== 'accepted') {
+            await ctx.answerCbQuery('❌ Приглашение не было принято исполнителем');
+            return;
+        }
+
+        // Проверяем, не добавлен ли уже исполнитель на эту роль в проект
+        const hasMember = await Project.hasMember(application.project_id, application.executor_id, 'executor', application.role_id);
+        
+        if (hasMember) {
+            await ctx.answerCbQuery('❌ Исполнитель уже добавлен на эту роль в проект');
+            return;
+        }
+
+        // Добавляем исполнителя в проект
+        const project = await Project.findById(application.project_id);
+        await Project.addMember(application.project_id, application.executor_id, 'executor', application.role_id);
+        
+        // Уведомляем исполнителя
+        const executorUser = await User.findById(application.executor_id);
+        if (executorUser) {
+            await ctx.telegram.sendMessage(
+                executorUser.telegram_id,
+                `🎉 <b>Вы добавлены в проект!</b>\n\n` +
+                `Проект: <b>${project.name}</b>\n` +
+                `Роль: <b>${application.role_name}</b>\n\n` +
+                `Поздравляем! Вы официально стали участником проекта.\n` +
+                `Менеджер проекта свяжется с вами для дальнейших инструкций.`,
+                { parse_mode: 'HTML' }
+            );
+        }
+
+        // Логируем событие
+        await AuditLog.create(
+            ctx.user.id,
+            'EXECUTOR_ADDED_TO_PROJECT',
+            application.project_id,
+            { 
+                executorId: application.executor_id,
+                executorUsername: executorUser?.username,
+                roleName: application.role_name,
+                applicationId: applicationId
+            }
+        );
+
+        await ctx.editMessageText(
+            `✅ <b>Исполнитель добавлен в проект!</b>\n\n` +
+            `Исполнитель: <b>@${executorUser?.username || executorUser?.first_name}</b>\n` +
+            `Роль: <b>${application.role_name}</b>\n` +
+            `Проект: <b>${project.name}</b>\n\n` +
+            `Исполнитель получил уведомление о добавлении в проект.`,
+            { 
+                parse_mode: 'HTML',
+                reply_markup: {
+                    inline_keyboard: [
+                        [
+                            { text: '✅ Добавить в проект', callback_data: `add_accepted_to_project_${application.project_id}` }
+                        ],
+                        [
+                            { text: '🔙 К проекту', callback_data: `project_details_${application.project_id}` }
+                        ]
+                    ]
+                }
+            }
+        );
+
+        await ctx.answerCbQuery('✅ Исполнитель успешно добавлен в проект!');
+
+    } catch (error) {
+        console.error('Error in confirmAddToProject:', error);
+        await ctx.answerCbQuery('❌ Произошла ошибка при добавлении в проект');
+    }
+};
+
+// Отклонение всех откликов на роль
+const declineAllApplications = async (ctx) => {
+    try {
+        const roleId = parseInt(ctx.match[1]);
+        
+        const role = await ProjectRole.findById(roleId);
+        if (!role) {
+            await ctx.answerCbQuery('❌ Вакансия не найдена');
+            return;
+        }
+
+        // Проверяем права доступа
+        const project = await Project.findById(role.project_id);
+        const managers = await ProjectManager.findByProject(role.project_id);
+        const isManager = managers.some(m => m.manager_id === ctx.user.id && m.status === 'accepted');
+        
+        if (!isManager && project.customer_id !== ctx.user.id) {
+            await ctx.answerCbQuery('❌ У вас нет прав для отклонения откликов');
+            return;
+        }
+
+        // Получаем активные отклики
+        const ExecutorApplication = require('../../db/models/ExecutorApplication');
+        const applications = await ExecutorApplication.findByRole(roleId);
+        const activeApplications = applications.filter(app => app.status === 'pending' || app.status === 'invited');
+        
+        if (activeApplications.length === 0) {
+            await ctx.answerCbQuery('❌ Нет активных откликов для отклонения');
+            return;
+        }
+
+        // Отклоняем все активные отклики
+        let declinedCount = 0;
+        for (const application of activeApplications) {
+            await ExecutorApplication.updateStatus(application.id, 'declined');
+            declinedCount++;
+            
+            // Уведомляем исполнителя об отклонении
+            const executorUser = await User.findById(application.executor_id);
+            if (executorUser) {
+                const message = application.status === 'pending' 
+                    ? `❌ <b>Ваш отклик отклонен</b>\n\n` +
+                      `Проект: <b>${project.name}</b>\n` +
+                      `Роль: <b>${role.role_name}</b>\n\n` +
+                      `К сожалению, ваш отклик был отклонен менеджером проекта.`
+                    : `❌ <b>Ваше приглашение отклонено</b>\n\n` +
+                      `Проект: <b>${project.name}</b>\n` +
+                      `Роль: <b>${role.role_name}</b>\n\n` +
+                      `К сожалению, ваше приглашение было отклонено менеджером проекта.`;
+                
+                await ctx.telegram.sendMessage(
+                    executorUser.telegram_id,
+                    message,
+                    { parse_mode: 'HTML' }
+                );
+            }
+        }
+
+        // Логируем событие
+        await AuditLog.create(
+            ctx.user.id,
+            'ALL_APPLICATIONS_DECLINED',
+            role.project_id,
+            { 
+                roleId: roleId,
+                roleName: role.role_name,
+                declinedCount: declinedCount
+            }
+        );
+
+        await ctx.editMessageText(
+            `❌ <b>Все отклики отклонены!</b>\n\n` +
+            `Роль: <b>${role.role_name}</b>\n` +
+            `Проект: <b>${project.name}</b>\n` +
+            `Отклонено откликов: <b>${declinedCount}</b>\n\n` +
+            `Теперь вы можете удалить вакансию.`,
+            { 
+                parse_mode: 'HTML',
+                reply_markup: {
+                    inline_keyboard: [
+                        [
+                            { text: '🗑 Удалить вакансию', callback_data: `delete_role_${roleId}` }
+                        ],
+                        [
+                            { text: '🔙 Назад к вакансиям', callback_data: `edit_vacancies_${role.project_id}` }
+                        ]
+                    ]
+                }
+            }
+        );
+
+        await ctx.answerCbQuery(`✅ Отклонено ${declinedCount} откликов`);
+
+    } catch (error) {
+        console.error('Error in declineAllApplications:', error);
+        await ctx.answerCbQuery('❌ Произошла ошибка при отклонении откликов');
+    }
+};
+
+// Исключение всех исполнителей с роли
+const removeAllExecutors = async (ctx) => {
+    try {
+        const roleId = parseInt(ctx.match[1]);
+        
+        const role = await ProjectRole.findById(roleId);
+        if (!role) {
+            await ctx.answerCbQuery('❌ Вакансия не найдена');
+            return;
+        }
+
+        // Проверяем права доступа
+        const project = await Project.findById(role.project_id);
+        const managers = await ProjectManager.findByProject(role.project_id);
+        const isManager = managers.some(m => m.manager_id === ctx.user.id && m.status === 'accepted');
+        
+        if (!isManager && project.customer_id !== ctx.user.id) {
+            await ctx.answerCbQuery('❌ У вас нет прав для исключения исполнителей');
+            return;
+        }
+
+        // Получаем исполнителей на этой роли
+        const projectMembers = await Project.getMembers(role.project_id);
+        const roleExecutors = projectMembers.filter(member => 
+            member.member_role === 'executor' && member.role_id === roleId
+        );
+        
+        if (roleExecutors.length === 0) {
+            await ctx.answerCbQuery('❌ Нет исполнителей для исключения');
+            return;
+        }
+
+        // Исключаем всех исполнителей с роли
+        let removedCount = 0;
+        for (const executor of roleExecutors) {
+            // Удаляем исполнителя только с конкретной роли, а не полностью из проекта
+            await Project.removeMemberFromRole(role.project_id, executor.id, roleId);
+            removedCount++;
+            
+            // Уведомляем исполнителя об исключении
+            const executorUser = await User.findById(executor.id);
+            if (executorUser) {
+                await ctx.telegram.sendMessage(
+                    executorUser.telegram_id,
+                    `❌ <b>Вы исключены с роли</b>\n\n` +
+                    `Проект: <b>${project.name}</b>\n` +
+                    `Роль: <b>${role.role_name}</b>\n\n` +
+                    `К сожалению, вы были исключены с этой роли менеджером проекта.\n` +
+                    `Вакансия "${role.role_name}" будет удалена.`,
+                    { parse_mode: 'HTML' }
+                );
+            }
+        }
+
+        // Логируем событие
+        await AuditLog.create(
+            ctx.user.id,
+            'ALL_EXECUTORS_REMOVED',
+            role.project_id,
+            { 
+                roleId: roleId,
+                roleName: role.role_name,
+                removedCount: removedCount
+            }
+        );
+
+        await ctx.editMessageText(
+            `👥 <b>Все исполнители исключены!</b>\n\n` +
+            `Роль: <b>${role.role_name}</b>\n` +
+            `Проект: <b>${project.name}</b>\n` +
+            `Исключено исполнителей: <b>${removedCount}</b>\n\n` +
+            `Теперь вы можете удалить вакансию.`,
+            { 
+                parse_mode: 'HTML',
+                reply_markup: {
+                    inline_keyboard: [
+                        [
+                            { text: '🗑 Удалить вакансию', callback_data: `delete_role_${roleId}` }
+                        ],
+                        [
+                            { text: '🔙 Назад к вакансиям', callback_data: `edit_vacancies_${role.project_id}` }
+                        ]
+                    ]
+                }
+            }
+        );
+
+        await ctx.answerCbQuery(`✅ Исключено ${removedCount} исполнителей`);
+
+    } catch (error) {
+        console.error('Error in removeAllExecutors:', error);
+        await ctx.answerCbQuery('❌ Произошла ошибка при исключении исполнителей');
     }
 };
 
@@ -2966,5 +4155,19 @@ module.exports = {
     startEditRole,
     handleRoleEditStep,
     deleteRole,
+    searchExecutors,
+    viewExecutorProfile,
+    inviteExecutor,
+    acceptInvitation,
+    declineInvitation,
+    viewInvitations,
+    acceptInvitations,
+    declineInvitations,
+    confirmAcceptInvitation,
+    confirmDeclineInvitation,
+    addAcceptedToProject,
+    confirmAddToProject,
+    declineAllApplications,
+    removeAllExecutors,
     // Добавьте другие функции по необходимости
 };
