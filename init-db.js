@@ -11,6 +11,28 @@ async function initializeDatabase() {
     
     if (!process.env.DB_URL) {
         console.error('❌ DB_URL не установлен!');
+        console.log('📋 Доступные переменные окружения:');
+        Object.keys(process.env)
+            .filter(key => key.includes('DB') || key.includes('POSTGRES') || key.includes('DATABASE'))
+            .forEach(key => {
+                console.log(`  ${key}: ${process.env[key] ? 'SET' : 'NOT SET'}`);
+            });
+        process.exit(1);
+    }
+
+    // Проверяем формат DB_URL
+    console.log('🔍 Проверка формата DB_URL...');
+    console.log('DB_URL:', process.env.DB_URL.substring(0, 20) + '...');
+    
+    try {
+        const url = new URL(process.env.DB_URL);
+        console.log('✅ DB_URL имеет правильный формат');
+        console.log('Host:', url.hostname);
+        console.log('Port:', url.port);
+        console.log('Database:', url.pathname.substring(1));
+    } catch (error) {
+        console.error('❌ DB_URL имеет неправильный формат:', error.message);
+        console.log('Пример правильного формата: postgres://user:password@host:port/database');
         process.exit(1);
     }
 
@@ -22,7 +44,9 @@ async function initializeDatabase() {
     try {
         // Проверяем подключение
         console.log('🔍 Проверка подключения к базе данных...');
-        await pool.query('SELECT 1');
+        const client = await pool.connect();
+        await client.query('SELECT 1');
+        client.release();
         console.log('✅ Подключение к базе данных успешно');
 
         // Выполняем миграции

@@ -116,6 +116,30 @@ DB_URL = postgres://user:password@host:port/database_name
 1. Нажмите "Manual Deploy" или сделайте commit в Git
 2. Дождитесь завершения развертывания
 3. Проверьте логи на наличие ошибок
+
+### Шаг 5: Диагностика проблем
+
+**Если DB_URL не работает:**
+1. Убедитесь, что скопировали полный URL из базы данных
+2. Проверьте, что URL начинается с `postgres://`
+3. Убедитесь, что в URL нет лишних пробелов
+
+**Пример правильного DB_URL:**
+```
+postgres://user:password@dpg-xxxxx-a.oregon-postgres.render.com:5432/database_name
+```
+
+**Диагностические команды:**
+```bash
+# Проверка переменных окружения
+npm run check-env
+
+# Тест подключения к базе данных
+npm run test-db
+
+# Инициализация базы данных
+npm run init-db
+```
 ```
 
 #### 4. DigitalOcean App Platform

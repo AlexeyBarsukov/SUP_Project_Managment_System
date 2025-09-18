@@ -13,6 +13,7 @@
     "postinstall": "echo 'Installation completed'",
     "check-env": "node check-env.js",
     "init-db": "node init-db.js",
+    "test-db": "node test-db-connection.js",
     "prestart": "node check-env.js && node init-db.js"
   },
   "keywords": [
