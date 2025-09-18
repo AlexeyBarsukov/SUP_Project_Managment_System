@@ -3,7 +3,7 @@ services:
     name: project-management-bot
     env: node
     plan: free
-    buildCommand: npm install
+    buildCommand: npm ci --only=production
     startCommand: npm start
     healthCheckPath: /
     envVars:

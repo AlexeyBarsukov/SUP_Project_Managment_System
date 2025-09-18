@@ -112,6 +112,20 @@ const AuditLog = require('./db/models/AuditLog');
 
 const ADMIN_ID = process.env.ADMIN_ID;
 
+// Отладочная информация для переменных окружения
+console.log('🔍 Environment check:');
+console.log('NODE_ENV:', process.env.NODE_ENV);
+console.log('TELEGRAM_TOKEN:', process.env.TELEGRAM_TOKEN ? 'SET (length: ' + process.env.TELEGRAM_TOKEN.length + ')' : 'NOT SET');
+console.log('ADMIN_ID:', process.env.ADMIN_ID);
+console.log('DB_URL:', process.env.DB_URL ? 'SET' : 'NOT SET');
+console.log('REDIS_URL:', process.env.REDIS_URL ? 'SET' : 'NOT SET');
+
+// Проверка токена
+if (!process.env.TELEGRAM_TOKEN) {
+    console.error('❌ TELEGRAM_TOKEN is not set! Please check your environment variables.');
+    process.exit(1);
+}
+
 // Создание экземпляра бота
 const bot = new Telegraf(process.env.TELEGRAM_TOKEN);
 

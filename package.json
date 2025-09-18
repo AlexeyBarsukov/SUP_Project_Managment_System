@@ -10,7 +10,9 @@
     "dev:debug": "nodemon --inspect src/app.js",
     "test": "jest",
     "build": "echo 'No build step required for Node.js'",
-    "postinstall": "echo 'Installation completed'"
+    "postinstall": "echo 'Installation completed'",
+    "check-env": "node check-env.js",
+    "prestart": "node check-env.js"
   },
   "keywords": ["telegram", "bot", "project-management", "nodejs"],
   "author": "",
