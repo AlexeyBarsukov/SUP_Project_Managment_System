@@ -18,9 +18,10 @@
 - **ElephantSQL** (бесплатно до 20MB)
 - **Supabase** (бесплатно до 500MB)
 
-#### Вариант B: Redis в облаке
+#### Вариант B: Redis в облаке (опционально)
 - **Redis Cloud** (бесплатно до 30MB)
 - **Heroku Redis** (платно)
+- **Примечание**: Redis используется для rate limiting и кэширования. Бот будет работать и без Redis, но с ограниченной функциональностью.
 
 ## Платформы для развертывания
 
@@ -40,7 +41,7 @@ heroku create your-project-management-bot
 # Добавьте PostgreSQL
 heroku addons:create heroku-postgresql:mini
 
-# Добавьте Redis (опционально)
+# Добавьте Redis (опционально, для rate limiting)
 heroku addons:create heroku-redis:mini
 
 # Установите переменные окружения

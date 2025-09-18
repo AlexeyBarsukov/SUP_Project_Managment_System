@@ -17,6 +17,7 @@ services:
         sync: false
       - key: REDIS_URL
         sync: false
+        optional: true
       - key: PORT
         value: 3000
     autoDeploy: true

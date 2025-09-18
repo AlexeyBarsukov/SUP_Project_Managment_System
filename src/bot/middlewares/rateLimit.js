@@ -1,33 +1,46 @@
 const redis = require('redis');
 const Project = require('../../db/models/Project');
 
-// Создаем клиент Redis
-const redisClient = redis.createClient({
-    url: process.env.REDIS_URL
-});
+// Создаем клиент Redis только если REDIS_URL установлен
+let redisClient = null;
 
-redisClient.on('error', (err) => {
-    console.error('Redis Client Error:', err);
-});
+if (process.env.REDIS_URL) {
+    redisClient = redis.createClient({
+        url: process.env.REDIS_URL
+    });
 
-redisClient.on('connect', () => {
-    console.log('Connected to Redis');
-});
+    redisClient.on('error', (err) => {
+        console.error('Redis Client Error:', err);
+        redisClient = null; // Отключаем Redis при ошибке
+    });
 
-// Явное подключение к Redis (однократно при первом импорте)
-(async () => {
-    try {
-        if (!redisClient.isOpen) {
-            await redisClient.connect();
+    redisClient.on('connect', () => {
+        console.log('Connected to Redis');
+    });
+
+    // Явное подключение к Redis (однократно при первом импорте)
+    (async () => {
+        try {
+            if (!redisClient.isOpen) {
+                await redisClient.connect();
+            }
+        } catch (err) {
+            console.error('Ошибка подключения к Redis:', err);
+            redisClient = null; // Отключаем Redis при ошибке
         }
-    } catch (err) {
-        console.error('Ошибка подключения к Redis:', err);
-    }
-})();
+    })();
+} else {
+    console.log('⚠️ Redis URL not set, Redis features disabled');
+}
 
 const rateLimit = (maxRequests = 5, windowMs = 86400) => {
     return async (ctx, next) => {
         try {
+            // Если Redis недоступен, пропускаем rate limiting
+            if (!redisClient) {
+                return next();
+            }
+
             const userId = ctx.from.id;
             const key = `rate_limit:${userId}`;
             
