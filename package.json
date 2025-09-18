@@ -15,18 +15,24 @@
     "init-db": "node init-db.js",
     "prestart": "node check-env.js && node init-db.js"
   },
-  "keywords": ["telegram", "bot", "project-management", "nodejs"],
+  "keywords": [
+    "telegram",
+    "bot",
+    "project-management",
+    "nodejs"
+  ],
   "author": "",
   "license": "MIT",
   "dependencies": {
-    "telegraf": "^4.15.6",
+    "dotenv": "^16.3.1",
+    "express": "^4.21.2",
+    "moment": "^2.29.4",
     "pg": "^8.11.3",
     "redis": "^4.6.10",
-    "dotenv": "^16.3.1",
-    "moment": "^2.29.4"
+    "telegraf": "^4.15.6"
   },
   "devDependencies": {
-    "nodemon": "^3.0.2",
-    "jest": "^29.7.0"
+    "jest": "^29.7.0",
+    "nodemon": "^3.0.2"
   }
-} 
+}

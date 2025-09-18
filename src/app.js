@@ -1,4 +1,5 @@
 const { Telegraf, session } = require('telegraf');
+const express = require('express');
 require('dotenv').config();
 
 // Импорт middleware
@@ -2580,6 +2581,33 @@ const startBot = async () => {
     try {
         console.log('🚀 Starting Telegram bot...');
         
+        // Создаем веб-сервер для health check
+        const app = express();
+        const port = process.env.PORT || 3000;
+        
+        // Health check endpoint
+        app.get('/', (req, res) => {
+            res.json({ 
+                status: 'ok', 
+                service: 'telegram-bot',
+                timestamp: new Date().toISOString(),
+                uptime: process.uptime()
+            });
+        });
+        
+        app.get('/health', (req, res) => {
+            res.json({ 
+                status: 'healthy',
+                bot: 'running',
+                timestamp: new Date().toISOString()
+            });
+        });
+        
+        // Запускаем веб-сервер
+        app.listen(port, () => {
+            console.log(`🌐 Web server running on port ${port}`);
+        });
+        
         // Регистрируем обработчики профиля
         setupProfileHandlers(bot);
         
@@ -2587,8 +2615,28 @@ const startBot = async () => {
         console.log('✅ Bot started successfully!');
         
         // Graceful stop
-        process.once('SIGINT', () => bot.stop('SIGINT'));
-        process.once('SIGTERM', () => bot.stop('SIGTERM'));
+        process.once('SIGINT', async () => {
+            console.log('🛑 Received SIGINT, shutting down gracefully...');
+            await bot.stop('SIGINT');
+            process.exit(0);
+        });
+        
+        process.once('SIGTERM', async () => {
+            console.log('🛑 Received SIGTERM, shutting down gracefully...');
+            await bot.stop('SIGTERM');
+            process.exit(0);
+        });
+        
+        // Keep the process alive
+        process.on('uncaughtException', (error) => {
+            console.error('❌ Uncaught Exception:', error);
+            process.exit(1);
+        });
+        
+        process.on('unhandledRejection', (reason, promise) => {
+            console.error('❌ Unhandled Rejection at:', promise, 'reason:', reason);
+            process.exit(1);
+        });
         
     } catch (error) {
         console.error('❌ Error starting bot:', error);

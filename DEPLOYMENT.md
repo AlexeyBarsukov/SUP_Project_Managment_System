@@ -127,8 +127,21 @@ heroku logs --tail
 # Railway
 railway logs
 
+# Render
+# Логи доступны в Dashboard
+
 # Docker
 docker-compose logs -f bot
+```
+
+### 4. Health Check
+После развертывания проверьте, что сервис работает:
+```bash
+# Основной endpoint
+curl https://your-app-name.onrender.com/
+
+# Health check
+curl https://your-app-name.onrender.com/health
 ```
 
 ### 2. Проверка базы данных
