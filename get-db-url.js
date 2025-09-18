@@ -38,3 +38,4 @@ if (!dbUrl) {
 
 console.log('✅ DB_URL найден и готов к использованию');
 process.exit(0);
+
