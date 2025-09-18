@@ -134,12 +134,21 @@ postgres://user:password@dpg-xxxxx-a.oregon-postgres.render.com:5432/database_na
 # Проверка переменных окружения
 npm run check-env
 
+# Диагностика проблем с DB_URL
+npm run debug-db
+
 # Тест подключения к базе данных
 npm run test-db
 
 # Инициализация базы данных
 npm run init-db
 ```
+
+**Если DB_URL все еще не работает:**
+1. Запустите `npm run debug-db` для подробной диагностики
+2. Проверьте, что скопировали полный URL из Render Dashboard
+3. Убедитесь, что URL начинается с `postgres://`
+4. Проверьте, что в URL нет лишних пробелов или символов
 ```
 
 #### 4. DigitalOcean App Platform

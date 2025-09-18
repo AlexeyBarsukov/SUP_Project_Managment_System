@@ -24,16 +24,47 @@ async function initializeDatabase() {
     console.log('🔍 Проверка формата DB_URL...');
     console.log('DB_URL:', process.env.DB_URL.substring(0, 20) + '...');
     
+    // Более гибкая проверка URL
+    let isValidUrl = false;
+    let urlInfo = {};
+    
     try {
         const url = new URL(process.env.DB_URL);
-        console.log('✅ DB_URL имеет правильный формат');
-        console.log('Host:', url.hostname);
-        console.log('Port:', url.port);
-        console.log('Database:', url.pathname.substring(1));
+        isValidUrl = true;
+        urlInfo = {
+            protocol: url.protocol,
+            hostname: url.hostname,
+            port: url.port,
+            database: url.pathname.substring(1),
+            username: url.username,
+            password: url.password ? '***' : 'not set'
+        };
     } catch (error) {
-        console.error('❌ DB_URL имеет неправильный формат:', error.message);
-        console.log('Пример правильного формата: postgres://user:password@host:port/database');
-        process.exit(1);
+        // Попробуем альтернативные форматы
+        console.log('⚠️ Стандартный URL парсер не сработал, пробуем альтернативные форматы...');
+        
+        // Проверяем, начинается ли с postgres://
+        if (process.env.DB_URL.startsWith('postgres://')) {
+            console.log('✅ URL начинается с postgres://');
+            isValidUrl = true;
+            urlInfo = { protocol: 'postgres:', note: 'формат принят без детального парсинга' };
+        } else {
+            console.error('❌ DB_URL не начинается с postgres://');
+            console.log('Полный DB_URL:', process.env.DB_URL);
+            console.log('Пример правильного формата: postgres://user:password@host:port/database');
+            process.exit(1);
+        }
+    }
+    
+    if (isValidUrl) {
+        console.log('✅ DB_URL принят для использования');
+        if (urlInfo.hostname) {
+            console.log('Host:', urlInfo.hostname);
+            console.log('Port:', urlInfo.port || '5432 (default)');
+            console.log('Database:', urlInfo.database);
+            console.log('Username:', urlInfo.username);
+            console.log('Password:', urlInfo.password);
+        }
     }
 
     const pool = new Pool({
