@@ -9,11 +9,11 @@ console.log('================================');
 const requiredVars = [
     'TELEGRAM_TOKEN',
     'ADMIN_ID',
-    'NODE_ENV'
+    'NODE_ENV',
+    'DB_URL'
 ];
 
 const optionalVars = [
-    'DB_URL',
     'REDIS_URL',
     'PORT'
 ];

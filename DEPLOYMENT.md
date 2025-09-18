@@ -78,8 +78,44 @@ railway up
 # 4. Настройте переменные окружения в Dashboard:
 #    - TELEGRAM_TOKEN=your_bot_token_here
 #    - ADMIN_ID=your_telegram_id_here
-# 5. DB_URL автоматически устанавливается из базы данных
-# 6. Развертывание происходит автоматически
+#    - DB_URL=postgres://user:password@host:port/database (из базы данных)
+# 5. Развертывание происходит автоматически
+
+# Важно: DB_URL нужно скопировать из раздела "Database" в Render Dashboard
+
+## Подробная настройка Render:
+
+### Шаг 1: Создание проекта
+1. Зайдите на [render.com](https://render.com)
+2. Нажмите "New +" → "Web Service"
+3. Подключите ваш GitHub репозиторий
+4. Render автоматически обнаружит `render.yaml`
+
+### Шаг 2: Настройка базы данных
+1. В Render Dashboard нажмите "New +" → "PostgreSQL"
+2. Выберите план "Free"
+3. Назовите базу данных `project-management-db`
+4. Дождитесь создания базы данных
+
+### Шаг 3: Настройка переменных окружения
+В разделе "Environment" вашего веб-сервиса добавьте:
+
+```
+TELEGRAM_TOKEN = your_telegram_bot_token_here
+ADMIN_ID = your_telegram_id_here
+DB_URL = postgres://user:password@host:port/database_name
+```
+
+**Где взять DB_URL:**
+1. Перейдите в раздел "Database" 
+2. Найдите вашу базу данных `project-management-db`
+3. Скопируйте "External Database URL"
+4. Вставьте его как значение переменной `DB_URL`
+
+### Шаг 4: Развертывание
+1. Нажмите "Manual Deploy" или сделайте commit в Git
+2. Дождитесь завершения развертывания
+3. Проверьте логи на наличие ошибок
 ```
 
 #### 4. DigitalOcean App Platform

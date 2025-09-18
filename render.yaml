@@ -14,9 +14,7 @@ services:
       - key: ADMIN_ID
         sync: false
       - key: DB_URL
-        fromDatabase:
-          name: project-management-db
-          property: connectionString
+        sync: false
       - key: REDIS_URL
         sync: false
         optional: true
