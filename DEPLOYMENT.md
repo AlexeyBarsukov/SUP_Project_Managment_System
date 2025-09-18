@@ -74,11 +74,12 @@ railway up
 ```bash
 # 1. Подключите GitHub репозиторий к Render
 # 2. Render автоматически обнаружит render.yaml
-# 3. Настройте переменные окружения в Dashboard:
-#    - TELEGRAM_TOKEN
-#    - ADMIN_ID
-#    - DB_URL (автоматически создается)
-# 4. Развертывание происходит автоматически
+# 3. Render автоматически создаст PostgreSQL базу данных
+# 4. Настройте переменные окружения в Dashboard:
+#    - TELEGRAM_TOKEN=your_bot_token_here
+#    - ADMIN_ID=your_telegram_id_here
+# 5. DB_URL автоматически устанавливается из базы данных
+# 6. Развертывание происходит автоматически
 ```
 
 #### 4. DigitalOcean App Platform

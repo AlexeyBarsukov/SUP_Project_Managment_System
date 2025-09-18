@@ -12,7 +12,8 @@
     "build": "echo 'No build step required for Node.js'",
     "postinstall": "echo 'Installation completed'",
     "check-env": "node check-env.js",
-    "prestart": "node check-env.js"
+    "init-db": "node init-db.js",
+    "prestart": "node check-env.js && node init-db.js"
   },
   "keywords": ["telegram", "bot", "project-management", "nodejs"],
   "author": "",

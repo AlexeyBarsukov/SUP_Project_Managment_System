@@ -1,6 +1,16 @@
 const { Pool } = require('pg');
 require('dotenv').config();
 
+// Отладочная информация для подключения к БД
+console.log('🔍 Database connection info:');
+console.log('DB_URL:', process.env.DB_URL ? 'SET' : 'NOT SET');
+console.log('NODE_ENV:', process.env.NODE_ENV);
+
+if (!process.env.DB_URL) {
+    console.error('❌ DB_URL is not set! Please check your environment variables.');
+    process.exit(1);
+}
+
 const pool = new Pool({
     connectionString: process.env.DB_URL,
     ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false,
