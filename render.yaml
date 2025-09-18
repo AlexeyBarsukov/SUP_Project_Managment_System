@@ -1,0 +1,26 @@
+services:
+  - type: web
+    name: project-management-bot
+    env: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: TELEGRAM_TOKEN
+        sync: false
+      - key: ADMIN_ID
+        sync: false
+      - key: DB_URL
+        sync: false
+      - key: REDIS_URL
+        sync: false
+    autoDeploy: true
+
+databases:
+  - name: project-management-db
+    plan: free
+    databaseName: project_management
+    user: postgres

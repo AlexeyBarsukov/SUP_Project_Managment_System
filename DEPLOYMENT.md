@@ -69,7 +69,18 @@ railway init
 railway up
 ```
 
-#### 3. DigitalOcean App Platform
+#### 3. Render (Рекомендуется для простоты)
+```bash
+# 1. Подключите GitHub репозиторий к Render
+# 2. Render автоматически обнаружит render.yaml
+# 3. Настройте переменные окружения в Dashboard:
+#    - TELEGRAM_TOKEN
+#    - ADMIN_ID
+#    - DB_URL (автоматически создается)
+# 4. Развертывание происходит автоматически
+```
+
+#### 4. DigitalOcean App Platform
 1. Создайте аккаунт на DigitalOcean
 2. Перейдите в App Platform
 3. Подключите GitHub репозиторий
