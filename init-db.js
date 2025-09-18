@@ -67,9 +67,32 @@ async function initializeDatabase() {
         }
     }
 
-    const pool = new Pool({
+    // Создаем пул с более детальной конфигурацией
+    const poolConfig = {
         connectionString: process.env.DB_URL,
         ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false,
+        max: 10,
+        idleTimeoutMillis: 30000,
+        connectionTimeoutMillis: 10000,
+        query_timeout: 10000,
+        statement_timeout: 10000,
+    };
+    
+    console.log('🔧 Конфигурация подключения:');
+    console.log('SSL:', poolConfig.ssl ? 'enabled' : 'disabled');
+    console.log('Max connections:', poolConfig.max);
+    console.log('Connection timeout:', poolConfig.connectionTimeoutMillis + 'ms');
+    
+    const pool = new Pool(poolConfig);
+    
+    // Обработка ошибок пула
+    pool.on('error', (err) => {
+        console.error('❌ Ошибка пула подключений:', err.message);
+        console.error('Код ошибки:', err.code);
+    });
+    
+    pool.on('connect', () => {
+        console.log('✅ Новое подключение к базе данных установлено');
     });
 
     try {
@@ -126,9 +149,37 @@ async function initializeDatabase() {
 
     } catch (error) {
         console.error('❌ Ошибка при инициализации базы данных:', error.message);
+        console.error('Код ошибки:', error.code);
+        console.error('Детали ошибки:', error);
+        
+        // Дополнительная диагностика
+        if (error.code === 'ECONNREFUSED') {
+            console.log('\n💡 Возможные причины ECONNREFUSED:');
+            console.log('- База данных не запущена');
+            console.log('- Неправильный хост или порт');
+            console.log('- Проблемы с сетью');
+        } else if (error.code === '28P01') {
+            console.log('\n💡 Возможные причины 28P01 (authentication failed):');
+            console.log('- Неправильное имя пользователя или пароль');
+            console.log('- Пользователь не имеет прав доступа');
+        } else if (error.code === '3D000') {
+            console.log('\n💡 Возможные причины 3D000 (database does not exist):');
+            console.log('- База данных не существует');
+            console.log('- Неправильное имя базы данных');
+        } else if (error.message.includes('searchParams')) {
+            console.log('\n💡 Возможные причины ошибки searchParams:');
+            console.log('- Неправильный формат URL');
+            console.log('- Проблемы с парсингом connection string');
+            console.log('- Специальные символы в пароле');
+        }
+        
         process.exit(1);
     } finally {
-        await pool.end();
+        try {
+            await pool.end();
+        } catch (endError) {
+            console.error('Ошибка при закрытии пула:', endError.message);
+        }
     }
 }
 

@@ -14,6 +14,7 @@
     "check-env": "node check-env.js",
     "init-db": "node init-db.js",
     "test-db": "node test-db-connection.js",
+    "test-simple": "node test-simple-connection.js",
     "debug-db": "node debug-db-url.js",
     "prestart": "node check-env.js && node init-db.js"
   },
