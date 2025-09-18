@@ -86,7 +86,8 @@ const {
     showEditProfileMenu,
     showEditFieldList,
     handleEditFieldInput,
-    handleEditFieldValue
+    handleEditFieldValue,
+    setupProfileHandlers
 } = require('./bot/commands/profile');
 
 // Импорт команд просмотра менеджеров
@@ -2564,6 +2565,10 @@ bot.action('edit_cancel', async (ctx) => {
 const startBot = async () => {
     try {
         console.log('🚀 Starting Telegram bot...');
+        
+        // Регистрируем обработчики профиля
+        setupProfileHandlers(bot);
+        
         await bot.launch();
         console.log('✅ Bot started successfully!');
         

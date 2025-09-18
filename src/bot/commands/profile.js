@@ -13,6 +13,7 @@ const {
     PROFILE_VALIDATION 
 } = require('../../utils/validation');
 const { Telegraf } = require('telegraf');
+const { roleSelectionKeyboard } = require('../keyboards');
 
 // Состояния для заполнения профиля
 const PROFILE_STATES = {
@@ -137,8 +138,22 @@ async function handleProfileCommand(ctx) {
     }
     
     if (user.main_role === 'executor') {
-        // Показываем меню быстрого редактирования
-        await showEditProfileMenu(ctx, user);
+        // Показываем меню быстрого редактирования + кнопку смены роли
+        await ctx.reply(
+            '✏️ <b>Выберите тип редактирования:</b>',
+            {
+                parse_mode: 'HTML',
+                reply_markup: {
+                    inline_keyboard: [
+                        [ { text: '1. Изменить одно поле', callback_data: 'edit_one_field' } ],
+                        [ { text: '2. Перезаполнить весь профиль', callback_data: 'edit_full_profile' } ],
+                        [ { text: '3. Сменить роль', callback_data: 'change_role' } ],
+                        [ { text: '4. Отмена', callback_data: 'edit_cancel' } ]
+                    ]
+                }
+            }
+        );
+        ctx.session.editProfileUserType = 'executor';
         return;
     }
     
@@ -888,7 +903,8 @@ async function showEditProfileMenu(ctx, user) {
                 inline_keyboard: [
                     [ { text: '1. Изменить одно поле', callback_data: 'edit_one_field' } ],
                     [ { text: '2. Перезаполнить весь профиль', callback_data: 'edit_full_profile' } ],
-                    [ { text: '3. Отмена', callback_data: 'edit_cancel' } ]
+                    [ { text: '3. Сменить роль', callback_data: 'change_role' } ],
+                    [ { text: '4. Отмена', callback_data: 'edit_cancel' } ]
                 ]
             }
         }
@@ -1153,6 +1169,18 @@ async function handleFillProfileNo(ctx) {
     await ctx.answerCbQuery();
 }
 
+function setupProfileHandlers(bot) {
+    bot.action('change_role', async (ctx) => {
+        await ctx.reply(
+            'Выберите новую роль:',
+            {
+                reply_markup: roleSelectionKeyboard.reply_markup
+            }
+        );
+        await ctx.answerCbQuery();
+    });
+}
+
 module.exports = {
     handleProfileCommand,
     handleSpecialization,
@@ -1181,5 +1209,6 @@ module.exports = {
     handleExecutorProfileStep,
     handleFillProfileCommand,
     handleFillProfileYes,
-    handleFillProfileNo
+    handleFillProfileNo,
+    setupProfileHandlers
 };
